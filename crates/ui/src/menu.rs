@@ -1135,6 +1135,7 @@ impl RenderOnce for Menu {
                     .track_scroll(scrollbar.read(cx).scroll())
                     .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
                         if event.delta.precise() {
+                            gliding.update(cx, |bar, _| bar.stirred());
                             return;
                         }
                         gliding.update(cx, |bar, _| bar.nudge(window));

@@ -148,6 +148,7 @@ pub struct Scrollbar {
     scroll_guard: Option<ScrollGuard>,
     linger: Option<Task<()>>,
     glide: Glide,
+    watched: Option<EntityId>,
     following: bool,
     nudges: u64,
     middle_scroll: Option<MiddleScroll>,
@@ -171,6 +172,7 @@ impl Scrollbar {
             scroll_guard: None,
             linger: None,
             glide: Glide::default(),
+            watched: None,
             following: false,
             nudges: 0,
             middle_scroll: None,
@@ -214,7 +216,14 @@ impl Scrollbar {
 
     pub fn watching(mut self, view: EntityId) -> Self {
         self.glide.watch(view);
+        self.watched = Some(view);
         self
+    }
+
+    pub fn refresh_view(&self, cx: &mut App) {
+        if let Some(view) = self.watched {
+            cx.notify(view);
+        }
     }
 
     pub fn track_inset(mut self, inset: Pixels) -> Self {
@@ -296,6 +305,18 @@ impl Scrollbar {
             None => self.glide.aim(&self.scroll, point(across, to), window),
         }
         self.following = true;
+    }
+
+    pub fn move_by(&mut self, delta: Pixels, window: &mut Window) {
+        self.aim(self.goal() - delta, window);
+    }
+
+    pub fn top(&mut self) {
+        self.place(Pixels::ZERO);
+    }
+
+    pub fn bottom(&mut self) {
+        self.place(-self.scroll.max_offset().y);
     }
 
     pub fn place(&mut self, at: Pixels) {
