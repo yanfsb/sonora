@@ -5,8 +5,8 @@ use ui::{
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, Hsla, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, ScrollHandle,
+    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, FocusHandle, Focusable, Hsla,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollHandle,
 };
 use gpui::{Window, div, px};
 use router::{
@@ -15,6 +15,8 @@ use router::{
 use state::{AppSettings, Origin, Playback, PlaybackState, Session, Sonora};
 
 use crate::shared::menus::{ItemMenu, pin_menu};
+use crate::shared::panes::Id;
+use crate::shared::surface;
 
 const NAV: [(Option<NavEntry>, &str, Destination); 6] = [
     (Some(NavEntry::Home), "icons/house.svg", Destination::Home),
@@ -71,6 +73,14 @@ const MIN_WIDTH: Pixels = px(160.);
 const MAX_WIDTH: Pixels = px(400.);
 const HINT_HEIGHT: Pixels = px(42.);
 
+#[derive(Clone, PartialEq)]
+enum Target {
+    Navigate(Destination),
+    Library,
+    Local,
+    Settings,
+}
+
 pub(crate) struct SidebarLeft {
     settings: Entity<AppSettings>,
     session: Entity<Session>,
@@ -89,6 +99,8 @@ pub(crate) struct SidebarLeft {
     track_menu: ItemMenu,
     context_menu: Option<(Pin, Point<Pixels>)>,
     scrollbar: Entity<Scrollbar>,
+    focus: FocusHandle,
+    cursor: Option<Target>,
 }
 
 impl SidebarLeft {
@@ -135,6 +147,8 @@ impl SidebarLeft {
             track_menu: ItemMenu::new(playlist_scrollbar),
             context_menu: None,
             scrollbar,
+            focus: cx.focus_handle(),
+            cursor: None,
         }
     }
 
@@ -179,6 +193,250 @@ impl SidebarLeft {
         }
         self.forced = Some(false);
         cx.notify();
+    }
+
+    fn targets(&self, cx: &App) -> Vec<Target> {
+        let authenticated = self.session.read(cx).authenticated();
+        let shown = |entry: NavEntry| self.settings.read(cx).nav_shown(entry.id());
+        let mut targets = Vec::new();
+        for (entry, _, destination) in NAV {
+            if entry.is_some_and(|entry| !shown(entry)) {
+                continue;
+            }
+            if matches!(destination, Destination::Library(_)) {
+                if !authenticated {
+                    continue;
+                }
+                targets.push(Target::Library);
+                if self.library_open {
+                    targets.extend(
+                        LIBRARY_TABS
+                            .into_iter()
+                            .map(|(_, tab)| Target::Navigate(Destination::Library(tab))),
+                    );
+                }
+            } else if matches!(destination, Destination::Local(_)) {
+                targets.push(Target::Local);
+                if self.local_open {
+                    targets.extend(
+                        LOCAL_TABS
+                            .into_iter()
+                            .map(|(_, tab)| Target::Navigate(Destination::Local(tab))),
+                    );
+                }
+            } else if matches!(destination, Destination::Settings(_)) {
+                targets.push(Target::Settings);
+                if self.settings_open {
+                    targets.extend(
+                        SETTINGS_TABS
+                            .into_iter()
+                            .map(|(_, tab)| Target::Navigate(Destination::Settings(tab))),
+                    );
+                }
+            } else {
+                targets.push(Target::Navigate(destination));
+            }
+        }
+        let slugs = self.session.read(cx).active_slugs();
+        targets.extend(
+            self.settings
+                .read(cx)
+                .pinned(&slugs)
+                .into_iter()
+                .map(|pin| Target::Navigate(Destination::from(&pin))),
+        );
+        targets
+    }
+
+    fn focus_cursor(&mut self, target: Target, window: &mut Window, cx: &mut App) {
+        window.focus(&self.focus, cx);
+        self.cursor = Some(target);
+    }
+
+    fn move_cursor(&mut self, delta: isize, cx: &App) -> bool {
+        let targets = self.targets(cx);
+        if targets.is_empty() {
+            return false;
+        }
+        let current = self
+            .cursor
+            .as_ref()
+            .and_then(|target| targets.iter().position(|candidate| candidate == target));
+        let next = match current {
+            Some(index) => (index as isize + delta).clamp(0, targets.len() as isize - 1) as usize,
+            None if delta < 0 => targets.len() - 1,
+            None => 0,
+        };
+        self.cursor = targets.get(next).cloned();
+        true
+    }
+
+    fn edge_cursor(&mut self, last: bool, window: &mut Window, cx: &mut App) {
+        let targets = self.targets(cx);
+        let Some(target) = targets
+            .get(match last {
+                true => targets.len().saturating_sub(1),
+                false => 0,
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.focus_cursor(target, window, cx);
+    }
+
+    fn page_cursor(&mut self, down: bool, window: &mut Window, cx: &mut App) {
+        let targets = self.targets(cx);
+        let Some(current) = self
+            .cursor
+            .as_ref()
+            .and_then(|target| targets.iter().position(|candidate| candidate == target))
+        else {
+            self.edge_cursor(!down, window, cx);
+            return;
+        };
+        let row = cx.theme().metrics.row;
+        let visible = (self.scrollbar.read(cx).scroll().bounds().size.height / row)
+            .floor()
+            .max(1.) as usize;
+        let index = match down {
+            true => current.saturating_add(visible).min(targets.len() - 1),
+            false => current.saturating_sub(visible),
+        };
+        self.focus_cursor(targets[index].clone(), window, cx);
+    }
+
+    fn activate_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.cursor.clone() else {
+            return;
+        };
+        match target {
+            Target::Navigate(destination) => navigate(destination, cx),
+            Target::Library => self.library_open = !self.library_open,
+            Target::Local => self.local_open = !self.local_open,
+            Target::Settings => self.settings_open = !self.settings_open,
+        }
+        cx.notify();
+    }
+
+    fn register_surface(&self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let focus = me.clone();
+        let ready = me.clone();
+        let selected = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let enter = me.clone();
+        let activate = me.clone();
+        let escape = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register_for(
+            Id::Left,
+            surface::Surface::custom(
+                move |window, cx| {
+                    focus
+                        .upgrade()
+                        .is_some_and(|sidebar| sidebar.read(cx).focus.is_focused(window))
+                },
+                move |cx| {
+                    ready
+                        .upgrade()
+                        .is_some_and(|sidebar| !sidebar.read(cx).targets(cx).is_empty())
+                },
+                move |cx| {
+                    selected
+                        .upgrade()
+                        .is_some_and(|sidebar| sidebar.read(cx).cursor.is_some())
+                },
+                move |_, cx| {
+                    next.update(cx, |sidebar, cx| {
+                        sidebar.move_cursor(1, cx);
+                        cx.notify();
+                    })
+                    .is_ok()
+                },
+                move |_, cx| {
+                    previous
+                        .update(cx, |sidebar, cx| {
+                            sidebar.move_cursor(-1, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                |_, _| false,
+                |_, _| false,
+                move |_, cx| {
+                    enter
+                        .update(cx, |sidebar, cx| {
+                            if sidebar.cursor.is_some() {
+                                sidebar.activate_cursor(cx);
+                            } else {
+                                sidebar.move_cursor(1, cx);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                },
+                move |_, cx| {
+                    activate
+                        .update(cx, |sidebar, cx| sidebar.activate_cursor(cx))
+                        .ok();
+                },
+                move |_, cx| {
+                    escape
+                        .update(cx, |sidebar, cx| {
+                            sidebar.cursor = None;
+                            cx.notify();
+                        })
+                        .ok();
+                },
+            )
+            .edges(
+                move |window, cx| {
+                    first
+                        .update(cx, |sidebar, cx| {
+                            sidebar.edge_cursor(false, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    last.update(cx, |sidebar, cx| {
+                        sidebar.edge_cursor(true, window, cx);
+                        cx.notify();
+                    })
+                    .is_ok()
+                },
+                move |window, cx| {
+                    page_up
+                        .update(cx, |sidebar, cx| {
+                            sidebar.page_cursor(false, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    page_down
+                        .update(cx, |sidebar, cx| {
+                            sidebar.page_cursor(true, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+            ),
+            cx,
+        );
+    }
+
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    pub(crate) fn pane_width(&self) -> Pixels {
+        self.width
     }
 
     pub fn occupied_width(&self) -> Pixels {
@@ -278,7 +536,10 @@ impl SidebarLeft {
             .meta(i18n::lookup(pin.kind.key(), None))
             .when(active, |card| card.bg(accent))
             .hover(move |style| style.bg(accent))
-            .press(move |_, _, cx| navigate(destination.clone(), cx))
+            .press(cx.listener(move |this, _, window, cx| {
+                this.focus_cursor(Target::Navigate(destination.clone()), window, cx);
+                navigate(destination.clone(), cx);
+            }))
             .menu(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                 this.track_menu.reset(cx);
                 this.context_menu = Some((opened.clone(), event.position));
@@ -366,8 +627,10 @@ impl Render for SidebarLeft {
                 rows.push(
                     nav_row(index, key, text, sidebar_accent)
                         .icon(icon)
+                        .selected(self.cursor == Some(Target::Library))
                         .trailing(chevron(self.library_open))
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.focus_cursor(Target::Library, window, cx);
                             this.library_open = !this.library_open;
                             cx.notify();
                         }))
@@ -383,10 +646,19 @@ impl Render for SidebarLeft {
 
                                 nav_row(name, name, tint, sidebar_accent)
                                     .flex_1()
+                                    .selected(
+                                        self.cursor
+                                            == Some(Target::Navigate(Destination::Library(tab))),
+                                    )
                                     .when(chosen, |button| button.bg(sidebar_accent))
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.focus_cursor(
+                                            Target::Navigate(Destination::Library(tab)),
+                                            window,
+                                            cx,
+                                        );
                                         navigate(Destination::Library(tab), cx)
-                                    })
+                                    }))
                             }))
                             .into_any_element(),
                     );
@@ -401,8 +673,10 @@ impl Render for SidebarLeft {
                 rows.push(
                     nav_row(index, key, text, sidebar_accent)
                         .icon(icon)
+                        .selected(self.cursor == Some(Target::Local))
                         .trailing(chevron(self.local_open))
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.focus_cursor(Target::Local, window, cx);
                             this.local_open = !this.local_open;
                             cx.notify();
                         }))
@@ -427,9 +701,20 @@ impl Render for SidebarLeft {
                                             sidebar_accent,
                                         )
                                         .flex_1()
+                                        .selected(
+                                            self.cursor
+                                                == Some(Target::Navigate(Destination::Local(tab))),
+                                        )
                                         .when(chosen, |button| button.bg(sidebar_accent))
                                         .on_click(
-                                            move |_, _, cx| navigate(Destination::Local(tab), cx),
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.focus_cursor(
+                                                    Target::Navigate(Destination::Local(tab)),
+                                                    window,
+                                                    cx,
+                                                );
+                                                navigate(Destination::Local(tab), cx)
+                                            }),
                                         )
                                     }),
                             )
@@ -446,8 +731,10 @@ impl Render for SidebarLeft {
                 rows.push(
                     nav_row(index, key, text, sidebar_accent)
                         .icon(icon)
+                        .selected(self.cursor == Some(Target::Settings))
                         .trailing(chevron(self.settings_open))
-                        .on_click(cx.listener(|this, _, _, cx| {
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.focus_cursor(Target::Settings, window, cx);
                             this.settings_open = !this.settings_open;
                             cx.notify();
                         }))
@@ -463,10 +750,19 @@ impl Render for SidebarLeft {
 
                                 nav_row(name, name, tint, sidebar_accent)
                                     .flex_1()
+                                    .selected(
+                                        self.cursor
+                                            == Some(Target::Navigate(Destination::Settings(tab))),
+                                    )
                                     .when(chosen, |button| button.bg(sidebar_accent))
-                                    .on_click(move |_, _, cx| {
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.focus_cursor(
+                                            Target::Navigate(Destination::Settings(tab)),
+                                            window,
+                                            cx,
+                                        );
                                         navigate(Destination::Settings(tab), cx)
-                                    })
+                                    }))
                             }))
                             .into_any_element(),
                     );
@@ -480,8 +776,13 @@ impl Render for SidebarLeft {
             rows.push(
                 nav_row(index, key, text, sidebar_accent)
                     .icon(icon)
+                    .selected(self.cursor == Some(Target::Navigate(destination.clone())))
                     .when(active, |button| button.bg(sidebar_accent))
-                    .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let target = Target::Navigate(destination.clone());
+                        this.focus_cursor(target, window, cx);
+                        navigate(destination.clone(), cx)
+                    }))
                     .into_any_element(),
             );
         }
@@ -489,7 +790,9 @@ impl Render for SidebarLeft {
         rows.extend(self.pins(window, cx));
 
         let overlaid = self.overlays();
+        self.register_surface(cx);
         let panel = Panel::new("sidebar-left", Side::Left, self.width)
+            .track_focus(&self.focus)
             .limits(MIN_WIDTH, MAX_WIDTH)
             .reach(self.ceiling(window, cx))
             .clears_scrollbar()
@@ -561,6 +864,12 @@ impl Render for SidebarLeft {
                 .child(panel)
                 .into_any_element(),
         }
+    }
+}
+
+impl Focusable for SidebarLeft {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 

@@ -1,0 +1,192 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - link "Skip to content" [ref=e4] [cursor=pointer]:
+      - /url: "#start-of-content"
+    - banner [ref=e9]:
+      - heading "Navigation Menu" [level=2] [ref=e10]
+      - generic [ref=e11]:
+        - link "Homepage" [ref=e13] [cursor=pointer]:
+          - /url: /
+        - generic [ref=e16]:
+          - navigation "Global" [ref=e17]:
+            - list [ref=e18]:
+              - listitem [ref=e19]:
+                - button "Platform" [ref=e21] [cursor=pointer]
+              - listitem [ref=e24]:
+                - button "Solutions" [ref=e26] [cursor=pointer]
+              - listitem [ref=e29]:
+                - button "Resources" [ref=e31] [cursor=pointer]
+              - listitem [ref=e34]:
+                - button "Open Source" [ref=e36] [cursor=pointer]
+              - listitem [ref=e39]:
+                - button "Enterprise" [ref=e41] [cursor=pointer]
+              - listitem [ref=e44]:
+                - link "Pricing" [ref=e45] [cursor=pointer]:
+                  - /url: https://github.com/pricing
+          - generic [ref=e46]:
+            - button "Search or jump to, type / to search" [ref=e48] [cursor=pointer]
+            - link "Sign in" [ref=e55] [cursor=pointer]:
+              - /url: /login?return_to=https%3A%2F%2Fgithub.com%2Fnolight132%2Fsonora%2Fissues%2F263
+            - link "Sign up" [ref=e58] [cursor=pointer]:
+              - /url: /signup?ref_cta=Sign+up&ref_loc=header+logged+out&ref_page=%2F%3Cuser-name%3E%2F%3Crepo-name%3E%2Fvoltron%2Fissues_fragments%2Fissue_layout&source=header-repo&source_repo=nolight132%2Fsonora
+            - button "Appearance settings" [ref=e61] [cursor=pointer]
+  - main [ref=e68]:
+    - generic [ref=e69]:
+      - generic [ref=e70]:
+        - generic [ref=e72]:
+          - link "nolight132" [ref=e76] [cursor=pointer]:
+            - /url: /nolight132
+          - generic [ref=e77]: /
+          - strong [ref=e78]:
+            - link "sonora" [ref=e79] [cursor=pointer]:
+              - /url: /nolight132/sonora
+          - generic [ref=e80]: Public
+        - generic [ref=e81]:
+          - list:
+            - listitem [ref=e82]:
+              - link "You must be signed in to change notification settings" [ref=e83] [cursor=pointer]:
+                - /url: /login?return_to=%2Fnolight132%2Fsonora
+                - text: Notifications
+            - listitem [ref=e86]:
+              - link "Fork 1" [ref=e87] [cursor=pointer]:
+                - /url: /login?return_to=%2Fnolight132%2Fsonora
+                - text: Fork
+                - generic "1" [ref=e90]
+            - listitem [ref=e91]:
+              - link "You must be signed in to star a repository" [ref=e93] [cursor=pointer]:
+                - /url: /login?return_to=%2Fnolight132%2Fsonora
+                - text: Star
+                - generic "59 users starred this repository" [ref=e96]: "59"
+      - navigation "Repository" [ref=e97]:
+        - list [ref=e98]:
+          - listitem [ref=e99]:
+            - link "Code" [ref=e100] [cursor=pointer]:
+              - /url: /nolight132/sonora
+          - listitem [ref=e104]:
+            - link "Issues 10" [ref=e105] [cursor=pointer]:
+              - /url: /nolight132/sonora/issues
+              - generic [ref=e109]: Issues
+              - generic "10" [ref=e110]
+          - listitem [ref=e111]:
+            - link "Pull requests" [ref=e112] [cursor=pointer]:
+              - /url: /nolight132/sonora/pulls
+          - listitem [ref=e116]:
+            - link "Actions" [ref=e117] [cursor=pointer]:
+              - /url: /nolight132/sonora/actions
+          - listitem [ref=e121]:
+            - link "Projects" [ref=e122] [cursor=pointer]:
+              - /url: /nolight132/sonora/projects
+          - listitem [ref=e126]:
+            - link "Security and quality" [ref=e127] [cursor=pointer]:
+              - /url: /nolight132/sonora/security
+          - listitem [ref=e131]:
+            - link "Insights" [ref=e132] [cursor=pointer]:
+              - /url: /nolight132/sonora/pulse
+    - generic [ref=e143]:
+      - region "Header" [ref=e145]:
+        - generic [ref=e146]:
+          - 'heading "Vim mode #263" [level=1] [ref=e148]':
+            - text: Vim mode
+            - generic [ref=e149]: "#263"
+          - generic [ref=e152]:
+            - button "New issue" [ref=e155] [cursor=pointer]
+            - button "Copy link" [ref=e158] [cursor=pointer]
+      - generic [ref=e167]:
+        - img "Issue" [ref=e168]
+        - text: Open
+      - generic [ref=e172]:
+        - generic [ref=e176]:
+          - heading "Description" [level=2] [ref=e177]
+          - generic [ref=e179]:
+            - generic [ref=e181]:
+              - link "@nolight132's profile" [ref=e183] [cursor=pointer]:
+                - /url: https://github.com/nolight132
+                - img "@nolight132" [ref=e184]
+              - generic [ref=e185]:
+                - link "nolight132" [ref=e187] [cursor=pointer]:
+                  - /url: https://github.com/nolight132
+                - generic [ref=e188]:
+                  - text: opened
+                  - link "on Aug 27, 2026on Aug 27, 2026" [ref=e189] [cursor=pointer]:
+                    - /url: https://github.com/nolight132/sonora/issues/263#issue-5270816323
+              - button "Issue body actions" [ref=e193] [cursor=pointer]
+            - generic [ref=e196]:
+              - generic [ref=e197]: No description provided.
+              - button "Reactions are currently unavailable" [ref=e199]
+        - generic [ref=e274]:
+          - heading "Metadata" [level=2] [ref=e275]
+          - generic [ref=e277]:
+            - generic [ref=e278]:
+              - generic [ref=e280]:
+                - heading "Assignees" [level=3]
+              - list [ref=e282]:
+                - listitem [ref=e283]:
+                  - link "nolight132" [ref=e284] [cursor=pointer]:
+                    - /url: /nolight132
+                    - generic:
+                      - img "@nolight132"
+            - generic [ref=e288]:
+              - generic [ref=e290]:
+                - heading "Labels" [level=3]
+              - generic [ref=e292]:
+                - link "enhancement New feature or request" [ref=e293] [cursor=pointer]:
+                  - /url: https://github.com/nolight132/sonora/issues?q=state%3Aopen%20label%3A%22enhancement%22
+                  - generic [ref=e294]: enhancement
+                  - generic [ref=e296]: New feature or request
+                - link "low priority" [ref=e297] [cursor=pointer]:
+                  - /url: https://github.com/nolight132/sonora/issues?q=state%3Aopen%20label%3A%22low%20priority%22
+            - generic [ref=e302]:
+              - generic [ref=e303]:
+                - heading "Projects" [level=3]
+              - generic [ref=e304]: No projects
+            - generic [ref=e306]:
+              - generic [ref=e307]:
+                - heading "Milestone" [level=3]
+              - generic [ref=e308]: No milestone
+            - generic [ref=e310]:
+              - generic [ref=e311]:
+                - heading "Relationships" [level=3]
+              - generic [ref=e312]: None yet
+            - generic [ref=e314]:
+              - generic [ref=e315]:
+                - heading "Development" [level=3]
+              - generic [ref=e316]: No branches or pull requests
+            - heading "Issue actions" [level=2] [ref=e317]
+            - list [ref=e318]:
+              - listitem [ref=e319]:
+                - button "Open in GitHub Copilot app" [ref=e320] [cursor=pointer]
+  - contentinfo [ref=e324]:
+    - heading "Footer" [level=2] [ref=e325]
+    - generic [ref=e326]:
+      - generic [ref=e327]:
+        - link "GitHub Homepage" [ref=e328] [cursor=pointer]:
+          - /url: https://github.com
+        - generic [ref=e331]: © 2026 GitHub, Inc.
+      - navigation "Footer" [ref=e332]:
+        - heading "Footer navigation" [level=3] [ref=e333]
+        - list "Footer navigation" [ref=e334]:
+          - listitem [ref=e335]:
+            - link "Terms" [ref=e336] [cursor=pointer]:
+              - /url: https://docs.github.com/site-policy/github-terms/github-terms-of-service
+          - listitem [ref=e337]:
+            - link "Privacy" [ref=e338] [cursor=pointer]:
+              - /url: https://docs.github.com/site-policy/privacy-policies/github-privacy-statement
+          - listitem [ref=e339]:
+            - link "Security" [ref=e340] [cursor=pointer]:
+              - /url: https://github.com/security
+          - listitem [ref=e341]:
+            - link "Status" [ref=e342] [cursor=pointer]:
+              - /url: https://www.githubstatus.com/
+          - listitem [ref=e343]:
+            - link "Community" [ref=e344] [cursor=pointer]:
+              - /url: https://github.community/
+          - listitem [ref=e345]:
+            - link "Docs" [ref=e346] [cursor=pointer]:
+              - /url: https://docs.github.com/
+          - listitem [ref=e347]:
+            - link "Contact" [ref=e348] [cursor=pointer]:
+              - /url: https://support.github.com?tags=dotcom-footer
+          - listitem [ref=e349]:
+            - button "Manage cookies" [ref=e351] [cursor=pointer]
+          - listitem [ref=e352]:
+            - button "Do not share my personal information" [ref=e354] [cursor=pointer]

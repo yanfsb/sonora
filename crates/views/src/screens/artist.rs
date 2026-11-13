@@ -16,7 +16,7 @@ use ui::ActiveTheme as _;
 use ui::Listing as _;
 use ui::{
     Button, Card, MIN_CONTENT, Mode, Picker, Pin, PinKind, Popovers, Popup, Scrollbar, Scroller,
-    Skeleton, TableDelegate, TableEvent, TableState, Text, scrolled, snapped, table,
+    Skeleton, TableDelegate, TableEvent, TableState, Text, clear_listing, scrolled, snapped, table,
 };
 
 use crate::chrome::tools;
@@ -26,8 +26,11 @@ use crate::shared::album_grid::{AlbumGrid, CardGrid};
 use crate::shared::confirm::Confirm;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
 use crate::shared::menus::{ItemMenu, album_menu, artist_menu};
+use crate::shared::motion;
 use crate::shared::page;
+use crate::shared::panes::Id;
 use crate::shared::picks::{Picks, Shape};
+use crate::shared::surface;
 use crate::shared::tracks::{PlaybackStatus, TrackSource, Tracks, drop_picked, playback_status};
 
 const SECTION: &str = "artist";
@@ -800,6 +803,7 @@ impl Tooled for ArtistView {
 
 impl Render for ArtistView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("artist-page", &self.scrollbar, cx);
         let theme = *cx.theme();
         let inset = theme.metrics.inset;
         let previous = self.width;
@@ -818,9 +822,13 @@ impl Render for ArtistView {
         }
         if self.mode == Mode::List {
             self.table.claim(cx);
+            surface::register(surface::Surface::table(&self.table), cx);
             let viewport = page::viewport(&scroll, inset, window);
             self.table
                 .update(cx, |table, _| table.set_viewport(viewport));
+        } else {
+            clear_listing(cx);
+            surface::remove(Id::Content, cx);
         }
 
         let release_menu = self.release_menu.clone().map(|(album, position)| {

@@ -9,6 +9,7 @@ use ui::{ActiveTheme as _, Mode, Popovers, Scrollbar, Scroller, Skeleton, Text, 
 
 use crate::chrome::{Chrome, Toolbar, Tooled, tools};
 use crate::shared::cells;
+use crate::shared::motion;
 use crate::shared::shelves::Shelves;
 
 const TILE: Pixels = px(220.);
@@ -88,6 +89,7 @@ impl Tooled for GenreView {
 
 impl Render for GenreView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("genre", &self.scrollbar, cx);
         let theme = *cx.theme();
         let pad = theme.metrics.inset;
         let room = cells::content_width(window, pad * 2., cx);
@@ -105,7 +107,7 @@ impl Render for GenreView {
         let scroll = self.scrollbar.read(cx).scroll().clone();
         let viewport = self.shelves.read(cx).viewport(&scroll, window);
         let shelves = self.shelves.update(cx, |shelves, cx| {
-            shelves.render(sections, mode, width, viewport, window, cx)
+            shelves.render(sections, mode, width, viewport, scroll, window, cx)
         });
 
         div().flex().flex_col().size_full().child(

@@ -16,6 +16,7 @@ use crate::shared::about::{AboutArtist, about_modal};
 use crate::shared::cells;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero, release_date_label};
 use crate::shared::menus::ItemMenu;
+use crate::shared::motion;
 use crate::shared::pins::Pinned as _;
 
 const PANEL: Pixels = px(300.);
@@ -483,6 +484,7 @@ impl SongView {
 
 impl Render for SongView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("song-page", &self.scrollbar, cx);
         let theme = *cx.theme();
         let (track, error, loading) = {
             let detail = self.detail.read(cx);

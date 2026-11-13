@@ -11,12 +11,14 @@ use ui::Input;
 
 use crate::chrome::Chrome;
 use crate::shared::menus::{ItemMenu, album_menu, artist_menu, playlist_menu};
+use crate::shared::motion;
+use crate::shared::surface;
 use state::{AlbumHit, ArtistHit, Genres, Hit, Kind, Playback, PlaylistHit, Search, Sonora};
 use ui::ActiveTheme as _;
 use ui::{
-    Activate, Card, Deck, Deselect, Pinnable, Popup, Room, Scrollbar, Scroller, SelectLeft,
-    SelectNext, SelectPrevious, SelectRight, Separator, Text, Theme, VAST, Viewport, clock,
-    eyebrow, scrolled, snapped, vacant,
+    Activate, Card, Deck, Deselect, Dismiss, Pinnable, Popup, Room, Scrollbar, Scroller,
+    SelectLeft, SelectNext, SelectPrevious, SelectRight, Separator, Text, Theme, VAST, Viewport,
+    clock, eyebrow, scrolled, snapped, vacant,
 };
 
 use crate::shared::cards;
@@ -36,6 +38,12 @@ enum Press {
     Artist(String),
     Album(String),
     Playlist(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Cursor {
+    Best,
+    Result { column: usize, row: usize },
 }
 
 #[derive(Clone)]
@@ -72,7 +80,7 @@ pub(crate) struct SearchView {
     track_menu: ItemMenu,
     context_menu: Option<(HitMenu, Point<Pixels>)>,
     focus: FocusHandle,
-    cursor: Option<(usize, usize)>,
+    cursor: Option<Cursor>,
     rows: [usize; 3],
 }
 
@@ -148,19 +156,149 @@ impl SearchView {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
 
+    fn register_surface(&self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let focus = me.clone();
+        let ready = me.clone();
+        let selected = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let left = me.clone();
+        let right = me.clone();
+        let enter = me.clone();
+        let activate = me.clone();
+        let escape = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register(
+            surface::Surface::custom(
+                move |window, cx| {
+                    focus
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).focus.is_focused(window))
+                },
+                move |cx| {
+                    ready.upgrade().is_some_and(|view| {
+                        let view = view.read(cx);
+                        !view.search.read(cx).hits().is_empty()
+                            || view.search.read(cx).best().is_some()
+                    })
+                },
+                move |cx| {
+                    selected
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).cursor.is_some())
+                },
+                move |window, cx| {
+                    next.update(cx, |view, cx| {
+                        view.select_next(&SelectNext, window, cx);
+                    })
+                    .is_ok()
+                },
+                move |window, cx| {
+                    previous
+                        .update(cx, |view, cx| {
+                            view.select_previous(&SelectPrevious, window, cx);
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    left.update(cx, |view, cx| {
+                        view.select_left(&SelectLeft, window, cx);
+                    })
+                    .is_ok()
+                },
+                move |window, cx| {
+                    right
+                        .update(cx, |view, cx| {
+                            view.select_right(&SelectRight, window, cx);
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    enter
+                        .update(cx, |view, cx| {
+                            if view.cursor.is_some() {
+                                view.activate_hit(&Activate, window, cx);
+                            } else {
+                                view.select_next(&SelectNext, window, cx);
+                            }
+                        })
+                        .ok();
+                },
+                move |window, cx| {
+                    activate
+                        .update(cx, |view, cx| view.activate_hit(&Activate, window, cx))
+                        .ok();
+                },
+                move |window, cx| {
+                    escape
+                        .update(cx, |view, cx| view.deselect_hit(&Deselect, window, cx))
+                        .ok();
+                },
+            )
+            .edges(
+                move |window, cx| {
+                    first
+                        .update(cx, |view, cx| {
+                            view.select_edge(false, stacked(window, cx), window, cx);
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    last.update(cx, |view, cx| {
+                        view.select_edge(true, stacked(window, cx), window, cx);
+                    })
+                    .is_ok()
+                },
+                move |window, cx| {
+                    page_up
+                        .update(cx, |view, cx| {
+                            view.select_page(false, stacked(window, cx), window, cx);
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    page_down
+                        .update(cx, |view, cx| {
+                            view.select_page(true, stacked(window, cx), window, cx);
+                        })
+                        .is_ok()
+                },
+            ),
+            cx,
+        );
+    }
+
+    fn dismiss_input(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus, cx);
+        cx.stop_propagation();
+    }
+
     fn select_next(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
         if self.search.read(cx).query().trim().is_empty() {
             return;
         }
         let stacked = stacked(window, cx);
         match self.cursor {
-            None => {
+            None => match self.search.read(cx).best().is_some() {
+                true => self.cursor = Some(Cursor::Best),
+                false => {
+                    let Some(column) = self.first_filled(0, stacked, cx) else {
+                        return;
+                    };
+                    self.place(column, 0);
+                }
+            },
+            Some(Cursor::Best) => {
                 let Some(column) = self.first_filled(0, stacked, cx) else {
                     return;
                 };
                 self.place(column, 0);
             }
-            Some((column, row)) => {
+            Some(Cursor::Result { column, row }) => {
                 let last = self
                     .seats(kinds(column, stacked), cx)
                     .len()
@@ -176,16 +314,48 @@ impl SearchView {
     }
 
     fn select_previous(&mut self, _: &SelectPrevious, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((column, row)) = self.cursor else {
+        let Some(cursor) = self.cursor else {
+            let stacked = stacked(window, cx);
+            let last = (0..columns(stacked)).rev().find_map(|column| {
+                let count = self.seats(kinds(column, stacked), cx).len();
+                (count > 0).then_some((column, count - 1))
+            });
+            match last {
+                Some((column, row)) => {
+                    self.place(column, row);
+                    window.focus(&self.focus, cx);
+                    self.reveal(window, cx);
+                    cx.notify();
+                }
+                None if self.search.read(cx).best().is_some() => {
+                    self.cursor = Some(Cursor::Best);
+                    window.focus(&self.focus, cx);
+                    cx.notify();
+                }
+                None => {}
+            }
             return;
         };
-        if row == 0 {
-            self.cursor = None;
-            self.input.update(cx, |input, cx| input.focus(window, cx));
-            cx.notify();
-            return;
+        match cursor {
+            Cursor::Best => {
+                self.cursor = None;
+                self.input.update(cx, |input, cx| input.focus(window, cx));
+                cx.notify();
+                return;
+            }
+            Cursor::Result { row: 0, .. } => {
+                match self.search.read(cx).best().is_some() {
+                    true => self.cursor = Some(Cursor::Best),
+                    false => {
+                        self.cursor = None;
+                        self.input.update(cx, |input, cx| input.focus(window, cx));
+                    }
+                }
+                cx.notify();
+                return;
+            }
+            Cursor::Result { column, row } => self.place(column, row - 1),
         }
-        self.place(column, row - 1);
         window.focus(&self.focus, cx);
         self.reveal(window, cx);
         cx.notify();
@@ -193,7 +363,7 @@ impl SearchView {
 
     fn select_left(&mut self, _: &SelectLeft, window: &mut Window, cx: &mut Context<Self>) {
         let stacked = stacked(window, cx);
-        let Some((column, _)) = self.cursor else {
+        let Some(Cursor::Result { column, .. }) = self.cursor else {
             return;
         };
         let Some(next) = self.prev_filled(column, stacked, cx) else {
@@ -207,7 +377,7 @@ impl SearchView {
 
     fn select_right(&mut self, _: &SelectRight, window: &mut Window, cx: &mut Context<Self>) {
         let stacked = stacked(window, cx);
-        let Some((column, _)) = self.cursor else {
+        let Some(Cursor::Result { column, .. }) = self.cursor else {
             return;
         };
         let Some(next) = self.next_filled(column, stacked, cx) else {
@@ -219,18 +389,90 @@ impl SearchView {
         cx.notify();
     }
 
+    fn select_edge(
+        &mut self,
+        last: bool,
+        stacked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = match last {
+            true => (0..columns(stacked)).rev().find_map(|column| {
+                let count = self.seats(kinds(column, stacked), cx).len();
+                (count > 0).then_some((column, count - 1))
+            }),
+            false => self.first_filled(0, stacked, cx).map(|column| (column, 0)),
+        };
+        match (last, target, self.search.read(cx).best().is_some()) {
+            (false, _, true) => self.cursor = Some(Cursor::Best),
+            (_, Some((column, row)), _) => self.place(column, row),
+            (true, None, true) => self.cursor = Some(Cursor::Best),
+            _ => return,
+        }
+        window.focus(&self.focus, cx);
+        self.reveal(window, cx);
+        cx.notify();
+    }
+
+    fn select_page(
+        &mut self,
+        down: bool,
+        stacked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Cursor::Result { column, row }) = self.cursor else {
+            self.select_edge(!down, stacked, window, cx);
+            return;
+        };
+        let visible = (self
+            .bar(column, stacked)
+            .read(cx)
+            .scroll()
+            .bounds()
+            .size
+            .height
+            / snapped(cx.theme().metrics.list_row, window).max(gpui::px(1.)))
+        .floor()
+        .max(1.) as usize;
+        let last = self
+            .seats(kinds(column, stacked), cx)
+            .len()
+            .saturating_sub(1);
+        self.place(
+            column,
+            match down {
+                true => row.saturating_add(visible).min(last),
+                false => row.saturating_sub(visible),
+            },
+        );
+        window.focus(&self.focus, cx);
+        self.reveal(window, cx);
+        cx.notify();
+    }
+
     fn activate_hit(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((column, row)) = self.cursor else {
+        let Some(cursor) = self.cursor else {
+            self.select_next(&SelectNext, window, cx);
             return;
         };
-        let stacked = stacked(window, cx);
-        let seats = self.seats(kinds(column, stacked), cx);
-        let Some(&(at, _)) = seats.get(row) else {
+        let hit = match cursor {
+            Cursor::Best => self.search.read(cx).best().cloned(),
+            Cursor::Result { column, row } => {
+                let stacked = stacked(window, cx);
+                self.seats(kinds(column, stacked), cx)
+                    .get(row)
+                    .and_then(|&(at, _)| self.search.read(cx).hits().get(at))
+                    .cloned()
+            }
+        };
+        let Some(hit) = hit else {
             return;
         };
-        let Some(hit) = self.search.read(cx).hits().get(at).cloned() else {
-            return;
-        };
+        self.activate(hit, cx);
+    }
+
+    fn activate(&mut self, hit: Hit, cx: &mut Context<Self>) {
         match hit {
             Hit::Song(track) => {
                 let current = track.id.is_some() && track.id == self.playback_status.0;
@@ -261,7 +503,7 @@ impl SearchView {
         if let Some(slot) = self.rows.get_mut(column) {
             *slot = row;
         }
-        self.cursor = Some((column, row));
+        self.cursor = Some(Cursor::Result { column, row });
     }
 
     fn hop(&mut self, column: usize, stacked: bool, cx: &App) {
@@ -288,7 +530,7 @@ impl SearchView {
     }
 
     fn reveal(&self, window: &Window, cx: &App) {
-        let Some((column, row)) = self.cursor else {
+        let Some(Cursor::Result { column, row }) = self.cursor else {
             return;
         };
         let stacked = stacked(window, cx);
@@ -550,6 +792,7 @@ impl SearchView {
             .gap_4()
             .p_3()
             .bg(theme.secondary)
+            .chosen(self.cursor == Some(Cursor::Best))
             .when_some(hit.pin(), Pinnable::pin)
             .when_some(target, |card, target| card.press(pressed(target, &me)))
             .when_some(HitMenu::of(hit), |card, target| {
@@ -722,7 +965,7 @@ impl SearchView {
                     hit,
                     place,
                     compact,
-                    this.cursor == Some((column, index)),
+                    this.cursor == Some(Cursor::Result { column, row: index }),
                     &view.downgrade(),
                     cx,
                 )
@@ -936,6 +1179,13 @@ impl Render for SearchView {
             false => Pixels::ZERO,
         };
         let asked = !self.search.read(cx).query().trim().is_empty();
+        self.register_surface(cx);
+        let page = match (asked, stacked) {
+            (false, _) => &self.browsing,
+            (true, true) => &self.mixed,
+            (true, false) => &self.songs,
+        };
+        motion::page("search-page", page, cx);
         let context_menu = self.context_menu.clone().map(|(target, position)| {
             let menu = match target {
                 HitMenu::Song(track) => self.track_menu.for_track(&track, cx),
@@ -987,6 +1237,7 @@ impl Render for SearchView {
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::activate_hit))
             .on_action(cx.listener(Self::deselect_hit))
+            .on_action(cx.listener(Self::dismiss_input))
             .child(
                 div()
                     .flex()

@@ -1,0 +1,8 @@
+[    2892ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://github.com/copilot/agent-sessions/nolight132/sonora/agents:0
+[    2893ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://github.com/nolight132/sonora/issues/263/agent_tasks:0
+[151264400ms] [ERROR] Failed to load resource: net::ERR_NAME_NOT_RESOLVED @ https://collector.github.com/github/collect:0
+[154864461ms] [ERROR] Failed to load resource: net::ERR_NAME_NOT_RESOLVED @ https://collector.github.com/github/collect:0
+[162064638ms] [ERROR] Failed to load resource: net::ERR_NAME_NOT_RESOLVED @ https://collector.github.com/github/collect:0
+[187265177ms] [ERROR] Failed to load resource: net::ERR_NAME_NOT_RESOLVED @ https://collector.github.com/github/collect:0
+[192667511ms] [ERROR] Failed to load resource: net::ERR_NETWORK_CHANGED @ https://collector.github.com/github/collect:0
+[280768140ms] [ERROR] Failed to load resource: net::ERR_NAME_NOT_RESOLVED @ https://collector.github.com/github/collect:0

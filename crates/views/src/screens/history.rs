@@ -13,7 +13,9 @@ use ui::{
 use crate::chrome::{Searchable, Toolbar, Tooled};
 use crate::shared::cells;
 use crate::shared::hero::{HeroMetaStrip, PageHero};
+use crate::shared::motion;
 use crate::shared::page;
+use crate::shared::surface;
 use crate::shared::tracks::{HISTORY_COLUMNS, TrackSource, Tracks, drop_picked};
 
 struct HistoryTracks(Entity<History>);
@@ -173,7 +175,9 @@ impl HistoryView {
 
 impl Render for HistoryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("history-page", &self.scrollbar, cx);
         self.table.claim(cx);
+        surface::register(surface::Surface::table(&self.table), cx);
         let inset = cx.theme().metrics.inset;
         let width = cells::content_width(window, Pixels::ZERO, cx);
         if (width - self.width).abs() >= gpui::px(0.5) {

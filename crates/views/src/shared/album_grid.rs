@@ -79,6 +79,7 @@ pub(crate) struct AlbumGrid {
     layout: CardLayout,
     albums: Vec<(usize, Album)>,
     playback: Entity<Playback>,
+    selected: Option<usize>,
     on_context: Option<ContextMenu>,
 }
 
@@ -94,8 +95,14 @@ impl AlbumGrid {
             layout: CardLayout::new(available),
             albums: albums.into_iter().collect(),
             playback,
+            selected: None,
             on_context: None,
         }
+    }
+
+    pub(crate) fn selected(mut self, selected: Option<usize>) -> Self {
+        self.selected = selected;
+        self
     }
 
     pub(crate) fn on_context(
@@ -114,10 +121,19 @@ impl RenderOnce for AlbumGrid {
             layout,
             albums,
             playback,
+            selected,
             on_context,
         } = self;
         let cards = albums.into_iter().map(|(index, album)| {
-            let card = album_card(id, index, &album, &playback, layout.card, cx);
+            let card = album_card(
+                id,
+                index,
+                &album,
+                &playback,
+                layout.card,
+                selected == Some(index),
+                cx,
+            );
             let Some(listener) = on_context.clone() else {
                 return card.into_any_element();
             };
@@ -142,10 +158,12 @@ fn album_card(
     album: &Album,
     playback: &Entity<Playback>,
     width: Pixels,
+    chosen: bool,
     cx: &App,
 ) -> Card {
     cards::album_card((id, index), album, playback, cx)
         .tile(width)
+        .chosen(chosen)
         .flat()
 }
 

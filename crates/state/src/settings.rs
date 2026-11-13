@@ -155,6 +155,7 @@ struct Values {
     romanization_scripts: RomanizationScripts,
     adaptive_menu: bool,
     check_updates: bool,
+    vim_mode: bool,
     sidebar_width: f32,
     sidebar_open: bool,
     sidebar_right_width: f32,
@@ -217,6 +218,7 @@ impl Default for Values {
             romanization_scripts: RomanizationScripts::default(),
             adaptive_menu: false,
             check_updates: cfg!(target_os = "windows"),
+            vim_mode: false,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_open: true,
             sidebar_right_width: DEFAULT_SIDEBAR_RIGHT_WIDTH,
@@ -353,6 +355,10 @@ impl AppSettings {
 
     pub fn check_updates(&self) -> bool {
         self.values.check_updates
+    }
+
+    pub fn vim_mode(&self) -> bool {
+        self.values.vim_mode
     }
 
     pub fn sidebar_width(&self) -> f32 {
@@ -527,6 +533,11 @@ impl AppSettings {
 
     pub fn set_check_updates(&mut self, check_updates: bool, cx: &mut Context<Self>) {
         self.values.check_updates = check_updates;
+        self.schedule_save(cx);
+    }
+
+    pub fn set_vim_mode(&mut self, vim_mode: bool, cx: &mut Context<Self>) {
+        self.values.vim_mode = vim_mode;
         self.schedule_save(cx);
     }
 

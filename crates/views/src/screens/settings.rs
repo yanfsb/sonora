@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::shared::local;
+use crate::shared::motion;
 use crate::shared::popups::{AccountPicker, BrowserPicker, SearchPopup, matches_query};
 use gpui::{
-    AnyElement, App, Context, Entity, FontWeight, Pixels, Render, SharedString, TextRun, Window,
-    div, font, px,
+    AnyElement, App, Context, Entity, FocusHandle, Focusable, FontWeight, Pixels, Render,
+    SharedString, TextRun, Window, div, font, px,
 };
 use gpui::{ScrollHandle, prelude::*, svg};
 use i18n::{Language, t};
@@ -132,6 +133,7 @@ pub struct SettingsView {
     typefaces: SearchPopup,
     typeface_faced: RefCell<HashSet<SharedString>>,
     installed: Option<Vec<SharedString>>,
+    focus: FocusHandle,
 }
 
 impl SettingsView {
@@ -171,6 +173,7 @@ impl SettingsView {
             typefaces,
             typeface_faced: RefCell::new(HashSet::new()),
             installed: None,
+            focus: cx.focus_handle(),
         }
     }
 
@@ -185,6 +188,7 @@ impl SettingsView {
             SettingsTab::General => vec![
                 Row::Item(self.startup_row(cx).into_any_element()),
                 Row::Item(self.entries_row(cx).into_any_element()),
+                Row::Item(self.vim_mode_row(cx).into_any_element()),
                 Row::Item(self.language_row(cx).into_any_element()),
                 self.title("settings-group-accounts", cx),
                 Row::Item(self.accounts_row(cx).into_any_element()),
@@ -315,6 +319,26 @@ impl SettingsView {
             muted,
             small,
             picker.into_any_element(),
+        )
+    }
+
+    fn vim_mode_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = *cx.theme();
+        let muted = theme.muted_foreground;
+        let small = theme.text(Text::Small);
+        let on = self.settings.read(cx).vim_mode();
+
+        self.row(
+            t!("settings-vim-mode"),
+            t!("settings-vim-mode-detail"),
+            muted,
+            small,
+            Switch::new("vim-mode", on)
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_vim_mode(!on, cx));
+                }))
+                .into_any_element(),
         )
     }
 
@@ -1681,6 +1705,12 @@ fn open_settings_file(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+impl Focusable for SettingsView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if self.installed.is_none() {
@@ -1724,9 +1754,12 @@ impl Render for SettingsView {
             SessionState::Authorizing(Some(SignInPrompt::Secret))
         );
 
+        motion::page("settings", &self.scrollbar, cx);
+
         div()
             .relative()
             .size_full()
+            .track_focus(&self.focus)
             .child(
                 Scroller::new("settings", &self.scrollbar)
                     .flex()

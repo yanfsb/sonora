@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- An optional Vim mode adds contextual page navigation with `j`, `k`, `h`, `l`, `gg`, `G`, and `/`;
+  `j/k` select focused table rows, while the other motions scroll pages or open global Search on Home.
+  Search results become keyboard-selectable with `j/k/h/l` after leaving the query input with Escape,
+  and `Ctrl-W h/j/k/l` moves focus among visible content panes.
+
 ## [0.28.0] - 2026-09-01
 
 ### Added

@@ -206,6 +206,7 @@ impl RenderOnce for Modal {
                                             let gliding = scroller.clone();
                                             move |event: &ScrollWheelEvent, window, cx| {
                                                 if event.delta.precise() {
+                                                    gliding.update(cx, |bar, _| bar.stirred());
                                                     return;
                                                 }
                                                 gliding.update(cx, |bar, _| bar.nudge(window));

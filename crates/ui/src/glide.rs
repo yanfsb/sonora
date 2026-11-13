@@ -123,9 +123,9 @@ impl Glide {
         scroll.set_offset(landed);
     }
 
-    pub fn stop_spring(&self, scroll: &ScrollHandle) -> bool {
+    pub fn stop(&self, scroll: &ScrollHandle) -> bool {
         let mut drift = self.drift.borrow_mut();
-        if !drift.springing {
+        if !drift.gliding {
             return false;
         }
         drift.shown = scroll.offset();

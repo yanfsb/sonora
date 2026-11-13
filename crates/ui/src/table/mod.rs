@@ -551,6 +551,7 @@ pub struct TableState<S: TableSource> {
     corners: Corners<Pixels>,
     focus: FocusHandle,
     scroll: Option<ScrollHandle>,
+    seen_scroll: Pixels,
     context_menu: Option<(Vec<usize>, Point<Pixels>)>,
     moving: Option<(usize, usize)>,
     sizing: Option<Sizing>,
@@ -572,6 +573,7 @@ impl<S: TableSource> TableState<S> {
             corners: Corners::default(),
             focus: cx.focus_handle(),
             scroll: None,
+            seen_scroll: Pixels::ZERO,
             context_menu: None,
             moving: None,
             sizing: None,
@@ -585,6 +587,10 @@ impl<S: TableSource> TableState<S> {
 
     pub fn set_viewport(&mut self, viewport: Viewport) {
         self.viewport = viewport;
+    }
+
+    pub fn selected(&self) -> Option<usize> {
+        self.delegate.selected()
     }
 
     fn select_next(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
@@ -651,10 +657,75 @@ impl<S: TableSource> TableState<S> {
             None if delta < 0 => count - 1,
             None => 0,
         };
+        self.select_display(display, window.modifiers().shift, window, cx);
+    }
 
+    fn select_display(
+        &mut self,
+        display: usize,
+        extend: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.delegate
-            .pick(self.delegate.row(display), window.modifiers().shift, false);
+            .pick(self.delegate.row(display), extend, false);
         self.reveal(display, window, cx);
+        cx.notify();
+    }
+
+    fn select_edge(&mut self, last: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.delegate.row_count();
+        if count == 0 {
+            return;
+        }
+        self.select_display(
+            match last {
+                true => count - 1,
+                false => 0,
+            },
+            false,
+            window,
+            cx,
+        );
+    }
+
+    fn select_page(&mut self, down: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.delegate.row_count();
+        if count == 0 {
+            return;
+        }
+        let row = snapped(cx.theme().metrics.row, window).max(px(1.));
+        let page = (self.viewport.height / row).floor().max(1.) as usize;
+        let current = self
+            .delegate
+            .selected
+            .and_then(|row| self.delegate.display_of(row));
+        let display = match (current, down) {
+            (Some(current), true) => current.saturating_add(page).min(count - 1),
+            (Some(current), false) => current.saturating_sub(page),
+            (None, true) => 0,
+            (None, false) => count - 1,
+        };
+        self.select_display(display, false, window, cx);
+    }
+
+    fn reconcile_scroll(&mut self, display: usize, window: &Window, cx: &mut Context<Self>) {
+        let count = self.delegate.row_count();
+        if count == 0 {
+            return;
+        }
+        let row = snapped(cx.theme().metrics.row, window);
+        let head = snapped(cx.theme().metrics.header, window);
+        let first = ((self.viewport.top - head) / row).ceil().max(0.) as usize;
+        let last = ((self.viewport.top + self.viewport.height - head) / row)
+            .floor()
+            .max(0.) as usize;
+        let target = match display {
+            display if display < first => first.min(count - 1),
+            display if display > last => last.min(count - 1),
+            _ => return,
+        };
+        self.delegate.pick(self.delegate.row(target), false, false);
         cx.notify();
     }
 
@@ -1098,6 +1169,31 @@ fn sort_icon(direction: Option<Sort>) -> &'static str {
 impl<S: TableSource> Render for TableState<S> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.delegate.measure(window, cx);
+        let scroll_changed = self.scroll.as_ref().is_some_and(|scroll| {
+            let offset = scroll.offset().y;
+            if offset == self.seen_scroll {
+                false
+            } else {
+                self.seen_scroll = offset;
+                true
+            }
+        });
+        if scroll_changed {
+            let weak = cx.entity().downgrade();
+            window.on_next_frame(move |window, cx| {
+                weak.update(cx, |table, cx| {
+                    let Some(selected) = table
+                        .delegate
+                        .selected
+                        .and_then(|row| table.delegate.display_of(row))
+                    else {
+                        return;
+                    };
+                    table.reconcile_scroll(selected, window, cx);
+                })
+                .ok();
+            });
+        }
 
         let metrics = cx.theme().metrics;
         let backdrop = cx.theme().background;
@@ -1230,8 +1326,13 @@ pub trait Listing {
     fn claim(&self, cx: &mut App) {
         show_listing(self.boxed(), cx);
     }
+    fn focused(&self, window: &Window, cx: &App) -> bool;
+    fn selected(&self, cx: &App) -> bool;
     fn select_next(&self, window: &mut Window, cx: &mut App);
     fn select_previous(&self, window: &mut Window, cx: &mut App);
+    fn select_first(&self, window: &mut Window, cx: &mut App);
+    fn select_last(&self, window: &mut Window, cx: &mut App);
+    fn select_page(&self, down: bool, window: &mut Window, cx: &mut App);
     fn deselect(&self, cx: &mut App);
     fn activate(&self, cx: &mut App);
     fn remove(&self, cx: &mut App);
@@ -1320,6 +1421,14 @@ impl<S: TableSource> Listing for Entity<TableState<S>> {
         Box::new(self.clone())
     }
 
+    fn focused(&self, window: &Window, cx: &App) -> bool {
+        self.read(cx).focus.contains_focused(window, cx)
+    }
+
+    fn selected(&self, cx: &App) -> bool {
+        self.read(cx).selected().is_some()
+    }
+
     fn select_next(&self, window: &mut Window, cx: &mut App) {
         self.update(cx, |table, cx| {
             window.focus(&table.focus.clone(), cx);
@@ -1331,6 +1440,27 @@ impl<S: TableSource> Listing for Entity<TableState<S>> {
         self.update(cx, |table, cx| {
             window.focus(&table.focus.clone(), cx);
             table.step(-1, window, cx);
+        });
+    }
+
+    fn select_first(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |table, cx| {
+            window.focus(&table.focus.clone(), cx);
+            table.select_edge(false, window, cx);
+        });
+    }
+
+    fn select_last(&self, window: &mut Window, cx: &mut App) {
+        self.update(cx, |table, cx| {
+            window.focus(&table.focus.clone(), cx);
+            table.select_edge(true, window, cx);
+        });
+    }
+
+    fn select_page(&self, down: bool, window: &mut Window, cx: &mut App) {
+        self.update(cx, |table, cx| {
+            window.focus(&table.focus.clone(), cx);
+            table.select_page(down, window, cx);
         });
     }
 

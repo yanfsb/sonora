@@ -22,12 +22,28 @@ actions!(
         OpenSettings,
         ToggleFullscreen,
         ToggleQueue,
-        ToggleLyrics
+        ToggleLyrics,
+        VimNext,
+        VimPrevious,
+        VimLeft,
+        VimRight,
+        VimTop,
+        VimBottom,
+        VimPaneLeft,
+        VimPaneDown,
+        VimPaneUp,
+        VimPaneRight,
+        VimScrollDown,
+        VimScrollUp,
+        VimScrollHalfDown,
+        VimScrollHalfUp
     ]
 );
 
 pub const WORKSPACE_CONTEXT: &str = "Workspace";
 pub const SEARCH_CONTEXT: &str = "Search";
+pub const HOME_CONTEXT: &str = "Home";
+pub const VIM_CONTEXT: &str = "Vim";
 
 pub fn bindings() -> Vec<KeyBinding> {
     let editing = Some(INPUT_CONTEXT);
@@ -40,6 +56,9 @@ pub fn bindings() -> Vec<KeyBinding> {
         "{WORKSPACE_CONTEXT} && !{INPUT_CONTEXT} && !{MENU_CONTEXT} && !{FORM_CONTEXT} && !{TABLE_CONTEXT} && !{SEARCH_CONTEXT}"
     );
     let results = format!("{SEARCH_CONTEXT} && !{INPUT_CONTEXT}");
+    let vim = format!("{VIM_CONTEXT} && !{INPUT_CONTEXT} && !{MENU_CONTEXT} && !{FORM_CONTEXT}");
+    let vim_home = format!("{vim} && {HOME_CONTEXT}");
+    let vim_other = format!("{vim} && !{HOME_CONTEXT}");
 
     vec![
         KeyBinding::new("down", SelectNext, table),
@@ -84,6 +103,22 @@ pub fn bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-right", SongNext, Some(&away_from_text)),
         KeyBinding::new("f", ToggleFullscreen, Some(&away_from_text)),
         KeyBinding::new("escape", Dismiss, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new("j", VimNext, Some(&vim)),
+        KeyBinding::new("k", VimPrevious, Some(&vim)),
+        KeyBinding::new("h", VimLeft, Some(&vim)),
+        KeyBinding::new("l", VimRight, Some(&vim)),
+        KeyBinding::new("g g", VimTop, Some(&vim)),
+        KeyBinding::new("shift-g", VimBottom, Some(&vim)),
+        KeyBinding::new("ctrl-w h", VimPaneLeft, Some(&vim)),
+        KeyBinding::new("ctrl-w j", VimPaneDown, Some(&vim)),
+        KeyBinding::new("ctrl-w k", VimPaneUp, Some(&vim)),
+        KeyBinding::new("ctrl-w l", VimPaneRight, Some(&vim)),
+        KeyBinding::new("ctrl-e", VimScrollDown, Some(&vim)),
+        KeyBinding::new("ctrl-y", VimScrollUp, Some(&vim)),
+        KeyBinding::new("ctrl-d", VimScrollHalfDown, Some(&vim)),
+        KeyBinding::new("ctrl-u", VimScrollHalfUp, Some(&vim)),
+        KeyBinding::new("/", OpenSearch, Some(&vim_home)),
+        KeyBinding::new("/", OpenFilter, Some(&vim_other)),
         KeyBinding::new("backspace", Backspace, editing),
         KeyBinding::new("ctrl-backspace", BackspaceWord, editing),
         KeyBinding::new("delete", Delete, editing),

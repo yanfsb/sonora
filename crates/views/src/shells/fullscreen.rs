@@ -8,9 +8,9 @@ use gpui::{
 };
 use gpui::{Window, div, px, relative};
 use i18n::t;
-use input::{ToggleFullscreen, WORKSPACE_CONTEXT};
+use input::{ToggleFullscreen, VIM_CONTEXT, WORKSPACE_CONTEXT};
 use router::{Destination, navigate};
-use state::{Cover, Playback, Queue, SideTab, Sonora};
+use state::{AppSettings, Cover, Playback, Queue, SideTab, Sonora};
 use ui::{
     ActiveTheme as _, Artwork, Button, ExplicitBadge, InlineLink, InlineLinks, Motion,
     Motioned as _, Popup, Room, Scrollbar, Scrubber, ScrubberState, Text, clock, snapped,
@@ -48,6 +48,7 @@ const WAKE_DEBOUNCE: Duration = Duration::from_millis(400);
 pub struct FullscreenView {
     playback: Entity<Playback>,
     queue: Entity<Queue>,
+    settings: Entity<AppSettings>,
     cover: Entity<Cover>,
     aside: Entity<Aside>,
     panel: Option<SideTab>,
@@ -76,6 +77,8 @@ pub struct FullscreenView {
 impl FullscreenView {
     pub fn new(playback: Entity<Playback>, queue: Entity<Queue>, cx: &mut Context<Self>) -> Self {
         cx.observe(&playback, |_, _, cx| cx.notify()).detach();
+        let settings = Sonora::global(cx).settings.clone();
+        cx.observe(&settings, |_, _, cx| cx.notify()).detach();
         let cover = Sonora::global(cx).cover.clone();
         cx.observe(&cover, |_, _, cx| cx.notify()).detach();
         let library = Sonora::global(cx).library.clone();
@@ -88,6 +91,7 @@ impl FullscreenView {
         let mut this = Self {
             playback,
             queue,
+            settings,
             cover,
             aside,
             panel: Some(SideTab::Lyrics),
@@ -828,6 +832,10 @@ impl Render for FullscreenView {
         let split = room.fits(Room::Wide) && self.panel.is_some();
         let hide = self.hidden(window, cx);
         let shown = hide < 1.;
+        let key_context = match self.settings.read(cx).vim_mode() {
+            true => format!("{WORKSPACE_CONTEXT} {VIM_CONTEXT}"),
+            false => WORKSPACE_CONTEXT.to_owned(),
+        };
         let (tall, wide, ceiling, tall_rest, wide_rest, ceiling_rest) = match room.fits(Room::Wide)
         {
             true => (
@@ -861,7 +869,7 @@ impl Render for FullscreenView {
 
         div()
             .id("fullscreen")
-            .key_context(WORKSPACE_CONTEXT)
+            .key_context(key_context.as_str())
             .track_focus(&self.focus)
             .relative()
             .flex()

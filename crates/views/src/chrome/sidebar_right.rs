@@ -1,5 +1,5 @@
 use gpui::prelude::*;
-use gpui::{Context, Entity, Pixels, Render, StyleRefinement, Window, div, px};
+use gpui::{App, Context, Entity, Pixels, Render, StyleRefinement, Window, div, px};
 use state::{AppSettings, Playback, Queue, SideTab, Sonora};
 use ui::{ActiveTheme as _, MIN_CONTENT, Panel, Room, Side};
 
@@ -41,6 +41,10 @@ impl SidebarRight {
 
     pub(crate) fn is_open(&self) -> bool {
         self.open
+    }
+
+    pub(crate) fn focus_handle(&self, cx: &App) -> gpui::FocusHandle {
+        self.aside.read(cx).focus_handle()
     }
 
     pub(crate) fn available(window: &Window) -> bool {

@@ -15,6 +15,7 @@ use ui::{ActiveTheme as _, Dismiss, Look, Theme, ThemeKind, clear_listing};
 use crate::chrome::{TitleBar, TitleBarEvent, TitleBarOptions, Toolbar, Tooled};
 use crate::screens::search::SearchView;
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
+use crate::shared::{motion, panes, surface};
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
@@ -390,6 +391,9 @@ impl Root {
 
     fn show(&mut self, destination: Destination, cx: &mut Context<Self>) {
         clear_listing(cx);
+        motion::clear(cx);
+        panes::clear(cx);
+        surface::clear(cx);
         if let Destination::Fullscreen = destination {
             self.view = RootView::Fullscreen;
             self.pending = Some(Focus::Fullscreen);
@@ -403,6 +407,7 @@ impl Root {
         });
 
         let mut toolbar = None;
+        let home = matches!(&destination, Destination::Home);
 
         let content: AnyView = match destination {
             Destination::Fullscreen => return,
@@ -476,7 +481,7 @@ impl Root {
 
         self.shells
             .workspace
-            .update(cx, |workspace, cx| workspace.set_content(content, cx));
+            .update(cx, |workspace, cx| workspace.set_content(content, home, cx));
         cx.notify();
     }
 }

@@ -26,7 +26,7 @@ use crate::shared::tracks::{
     PlaybackStatus, TrackField, TrackSieve, TrackSource, Tracks, drop_picked, playback_status,
     playlist_columns,
 };
-use crate::shared::{cells, page};
+use crate::shared::{cells, motion, page, surface};
 
 const PINNED: [&str; 3] = ["cover", "title", "name"];
 
@@ -443,7 +443,9 @@ impl DetailView {
 
 impl Render for DetailView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("detail-page", &self.scrollbar, cx);
         self.table.claim(cx);
+        surface::register(surface::Surface::table(&self.table), cx);
         let inset = cx.theme().metrics.inset;
         let width = cells::content_width(window, Pixels::ZERO, cx);
         if (width - self.width).abs() >= px(0.5) {

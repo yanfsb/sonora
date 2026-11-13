@@ -11,12 +11,13 @@ use router::{Destination, navigate};
 use state::Playback;
 use ui::{
     ActiveTheme as _, Button, Card, Deck, Glide, Mode, Popup, Skeleton, Text, Viewport, heading,
-    snapped,
+    scrolled, snapped,
 };
 
 use crate::shared::album_grid::CardGrid;
 use crate::shared::cards;
 use crate::shared::menus::Item;
+use crate::shared::{motion, surface};
 
 const PLATE: Pixels = px(260.);
 const LANES: usize = 5;
@@ -37,7 +38,12 @@ pub(crate) struct Shelves {
     host: EntityId,
     playback: Entity<Playback>,
     rails: Vec<Rail>,
+    cursor: Option<(usize, usize)>,
+    active_rail: Option<usize>,
     above: Rc<Cell<Option<Pixels>>>,
+    outer: Option<ScrollHandle>,
+    viewport: Viewport,
+    pending: u64,
     context_menu: Option<(Item, Point<Pixels>)>,
 }
 
@@ -48,7 +54,12 @@ impl Shelves {
             host,
             playback,
             rails: Vec::new(),
+            cursor: None,
+            active_rail: None,
             above: Rc::new(Cell::new(None)),
+            outer: None,
+            viewport: Viewport::default(),
+            pending: 0,
             context_menu: None,
         }
     }
@@ -86,7 +97,457 @@ impl Shelves {
 
     pub(crate) fn reset(&mut self) {
         self.rails.clear();
+        self.cursor = None;
+        self.active_rail = None;
+        self.pending = self.pending.wrapping_add(1);
         self.context_menu = None;
+    }
+
+    fn move_cursor(&mut self, sections: &[GenreSection], step: isize, columns: usize) -> bool {
+        let cards: Vec<_> = sections
+            .iter()
+            .enumerate()
+            .flat_map(|(section, content)| {
+                (0..content.items.len()).map(move |item| (section, item))
+            })
+            .collect();
+        if cards.is_empty() {
+            return false;
+        }
+        let current = self
+            .cursor
+            .and_then(|cursor| cards.iter().position(|card| *card == cursor));
+        let next = match current {
+            None if step < 0 => cards.len() - 1,
+            None => 0,
+            Some(at) => {
+                (at as isize + step * columns as isize).clamp(0, cards.len() as isize - 1) as usize
+            }
+        };
+        let next = cards[next];
+        let moved = self.cursor != Some(next);
+        self.cursor = Some(next);
+        moved
+    }
+
+    fn edge_cursor(
+        &mut self,
+        sections: &[GenreSection],
+        last: bool,
+        mode: Mode,
+        width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let cards: Vec<_> = sections
+            .iter()
+            .enumerate()
+            .flat_map(|(section, content)| {
+                (0..content.items.len()).map(move |item| (section, item))
+            })
+            .collect();
+        let Some(cursor) = cards.get(match last {
+            true => cards.len().saturating_sub(1),
+            false => 0,
+        }) else {
+            return false;
+        };
+        self.cursor = Some(*cursor);
+        self.active_rail = Some(cursor.0);
+        self.reveal_section(sections, mode, width, window, cx);
+        self.reveal_cursor(mode, width, window);
+        self.defer_reveal(mode, width, window, cx);
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn page_cursor(
+        &mut self,
+        sections: &[GenreSection],
+        down: bool,
+        columns: usize,
+        mode: Mode,
+        width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let cards: Vec<_> = sections
+            .iter()
+            .enumerate()
+            .flat_map(|(section, content)| {
+                (0..content.items.len()).map(move |item| (section, item))
+            })
+            .collect();
+        if cards.is_empty() {
+            return false;
+        }
+        let current = self
+            .cursor
+            .and_then(|cursor| cards.iter().position(|card| *card == cursor));
+        let page = columns.max(1) * ROWS.max(1);
+        let index = match (current, down) {
+            (Some(index), true) => index.saturating_add(page).min(cards.len() - 1),
+            (Some(index), false) => index.saturating_sub(page),
+            (None, true) => 0,
+            (None, false) => cards.len() - 1,
+        };
+        self.cursor = cards.get(index).copied();
+        self.active_rail = self.cursor.map(|(section, _)| section);
+        self.reveal_section(sections, mode, width, window, cx);
+        self.reveal_cursor(mode, width, window);
+        self.defer_reveal(mode, width, window, cx);
+        true
+    }
+
+    fn reveal_section(
+        &self,
+        sections: &[GenreSection],
+        mode: Mode,
+        width: Pixels,
+        window: &Window,
+        cx: &App,
+    ) {
+        let Some((section, _)) = self.cursor else {
+            return;
+        };
+        let Some(outer) = &self.outer else {
+            return;
+        };
+        let Some(height) = sections
+            .get(section)
+            .map(|section| self.height(section, mode, width, window, cx))
+        else {
+            return;
+        };
+        let heights: Vec<_> = sections
+            .iter()
+            .map(|section| self.height(section, mode, width, window, cx))
+            .collect();
+        let top = Deck::tops(&heights, STACK_GAP)
+            .get(section)
+            .copied()
+            .unwrap_or_default();
+        let bottom = top + height;
+        let visible_top = self.viewport.top;
+        let visible_bottom = visible_top + self.viewport.height;
+        let delta = match () {
+            _ if top < visible_top => top - visible_top,
+            _ if bottom > visible_bottom => bottom - visible_bottom,
+            _ => return,
+        };
+        let offset = outer.offset();
+        let target = (scrolled(outer) + delta).clamp(Pixels::ZERO, outer.max_offset().y);
+        outer.set_offset(point(offset.x, -target));
+    }
+
+    fn defer_reveal(
+        &mut self,
+        mode: Mode,
+        width: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending = self.pending.wrapping_add(1);
+        let pending = self.pending;
+        let owner = cx.entity().downgrade();
+        window.on_next_frame(move |window, cx| {
+            owner
+                .update(cx, |view, cx| {
+                    if view.pending != pending {
+                        return;
+                    }
+                    view.pending = 0;
+                    view.reveal_cursor(mode, width, window);
+                    cx.notify();
+                })
+                .ok();
+        });
+    }
+
+    fn reveal_cursor(&self, mode: Mode, width: Pixels, window: &mut Window) {
+        if mode != Mode::Grid {
+            return;
+        }
+        let Some((section, item)) = self.cursor else {
+            return;
+        };
+        let Some((handle, glide)) = self.rails.get(section) else {
+            return;
+        };
+        let layout = CardGrid::layout(width);
+        let viewport = handle.bounds().size.width;
+        let reach = handle.max_offset().x;
+        if viewport <= Pixels::ZERO || reach <= Pixels::ZERO {
+            return;
+        }
+        let stride = layout.card + RAIL_GAP;
+        let left = stride * item as f32;
+        let right = left + layout.card;
+        let at = (-glide.goal(handle).x).clamp(Pixels::ZERO, reach);
+        let end = at + viewport;
+        let target = match () {
+            _ if left < at => left,
+            _ if right > end => right - viewport,
+            _ => return,
+        };
+        glide.aim(
+            handle,
+            point(-target.clamp(Pixels::ZERO, reach), Pixels::ZERO),
+            window,
+        );
+    }
+
+    fn selected_rail(&self) -> Option<(ScrollHandle, Glide)> {
+        self.cursor
+            .and_then(|(section, _)| self.rails.get(section))
+            .map(|(handle, glide)| (handle.clone(), glide.clone()))
+    }
+
+    fn promote_selected(owner: &WeakEntity<Self>, cx: &mut App) {
+        let Some(view) = owner.upgrade() else {
+            return;
+        };
+        let Some((scroll, glide)) = view.read(cx).selected_rail() else {
+            return;
+        };
+        motion::promote_horizontal(&scroll, &glide, cx);
+    }
+
+    fn activate_card(&self, sections: &[GenreSection], cx: &mut App) {
+        let Some((section, item)) = self.cursor else {
+            return;
+        };
+        let Some(item) = sections
+            .get(section)
+            .and_then(|section| section.items.get(item))
+        else {
+            return;
+        };
+        match item {
+            GenreItem::Album(album) => navigate(Destination::Album(album.id.clone().into()), cx),
+            GenreItem::Playlist(playlist) => {
+                navigate(Destination::Playlist(playlist.id.clone().into()), cx)
+            }
+            GenreItem::Genre(genre) => navigate(Destination::Genre(genre.id.clone().into()), cx),
+        }
+    }
+
+    fn register_surface(
+        &self,
+        sections: Rc<Vec<GenreSection>>,
+        mode: Mode,
+        width: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let columns = match mode {
+            Mode::Grid => CardGrid::layout(width).columns,
+            Mode::List => lanes(width),
+        };
+        let me = cx.entity().downgrade();
+        let ready = sections.clone();
+        let next = sections.clone();
+        let previous = sections.clone();
+        let left = sections.clone();
+        let right = sections.clone();
+        let enter = sections.clone();
+        let activate = sections.clone();
+        let selected_owner = me.clone();
+        let next_owner = me.clone();
+        let previous_owner = me.clone();
+        let left_owner = me.clone();
+        let right_owner = me.clone();
+        let enter_owner = me.clone();
+        let activate_owner = me.clone();
+        let escape_owner = me.clone();
+        let first_owner = me.clone();
+        let last_owner = me.clone();
+        let page_up_owner = me.clone();
+        let page_down_owner = me.clone();
+        let first = sections.clone();
+        let last = sections.clone();
+        let page_up = sections.clone();
+        let page_down = sections;
+        surface::register(
+            surface::Surface::custom(
+                move |_, cx| {
+                    me.upgrade()
+                        .is_some_and(|view| view.read(cx).cursor.is_some())
+                },
+                move |_| ready.iter().any(|section| !section.items.is_empty()),
+                move |cx| {
+                    selected_owner
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).cursor.is_some())
+                },
+                {
+                    let me = next_owner;
+                    move |window, cx| {
+                        let moved = me
+                            .update(cx, |view, cx| {
+                                let moved = view.move_cursor(&next, 1, columns);
+                                view.active_rail = view.cursor.map(|(place, _)| place);
+                                if moved {
+                                    view.reveal_section(&next, mode, width, window, cx);
+                                    view.reveal_cursor(mode, width, window);
+                                    view.defer_reveal(mode, width, window, cx);
+                                    cx.notify();
+                                }
+                                moved
+                            })
+                            .unwrap_or(false);
+                        if moved {
+                            Self::promote_selected(&me, cx);
+                        }
+                        moved
+                    }
+                },
+                move |window, cx| {
+                    let moved = previous_owner
+                        .update(cx, |view, cx| {
+                            let moved = view.move_cursor(&previous, -1, columns);
+                            view.active_rail = view.cursor.map(|(place, _)| place);
+                            if moved {
+                                view.reveal_section(&previous, mode, width, window, cx);
+                                view.reveal_cursor(mode, width, window);
+                                view.defer_reveal(mode, width, window, cx);
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false);
+                    if moved {
+                        Self::promote_selected(&previous_owner, cx);
+                    }
+                    moved
+                },
+                move |window, cx| {
+                    let moved = left_owner
+                        .update(cx, |view, cx| {
+                            let moved = view.move_cursor(&left, -1, 1);
+                            view.active_rail = view.cursor.map(|(place, _)| place);
+                            if moved {
+                                view.reveal_section(&left, mode, width, window, cx);
+                                view.reveal_cursor(mode, width, window);
+                                view.defer_reveal(mode, width, window, cx);
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false);
+                    if moved {
+                        Self::promote_selected(&left_owner, cx);
+                    }
+                    moved
+                },
+                move |window, cx| {
+                    let moved = right_owner
+                        .update(cx, |view, cx| {
+                            let moved = view.move_cursor(&right, 1, 1);
+                            view.active_rail = view.cursor.map(|(place, _)| place);
+                            if moved {
+                                view.reveal_section(&right, mode, width, window, cx);
+                                view.reveal_cursor(mode, width, window);
+                                view.defer_reveal(mode, width, window, cx);
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false);
+                    if moved {
+                        Self::promote_selected(&right_owner, cx);
+                    }
+                    moved
+                },
+                move |window, cx| {
+                    let moved = enter_owner
+                        .update(cx, |view, cx| match view.cursor.is_some() {
+                            true => {
+                                view.activate_card(&enter, cx);
+                                false
+                            }
+                            false => {
+                                let moved = view.move_cursor(&enter, 1, columns);
+                                view.active_rail = view.cursor.map(|(place, _)| place);
+                                if moved {
+                                    view.reveal_section(&enter, mode, width, window, cx);
+                                    view.reveal_cursor(mode, width, window);
+                                    view.defer_reveal(mode, width, window, cx);
+                                    cx.notify();
+                                }
+                                moved
+                            }
+                        })
+                        .unwrap_or(false);
+                    if moved {
+                        Self::promote_selected(&enter_owner, cx);
+                    }
+                },
+                {
+                    move |_, cx| {
+                        activate_owner
+                            .update(cx, |view, cx| view.activate_card(&activate, cx))
+                            .ok();
+                    }
+                },
+                move |_, cx| {
+                    escape_owner
+                        .update(cx, |view, cx| {
+                            view.cursor = None;
+                            cx.notify();
+                        })
+                        .ok();
+                },
+            )
+            .edges(
+                move |window, cx| {
+                    first_owner
+                        .update(cx, |view, cx| {
+                            let moved = view.edge_cursor(&first, false, mode, width, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    last_owner
+                        .update(cx, |view, cx| {
+                            let moved = view.edge_cursor(&last, true, mode, width, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    page_up_owner
+                        .update(cx, |view, cx| {
+                            let moved =
+                                view.page_cursor(&page_up, false, columns, mode, width, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    page_down_owner
+                        .update(cx, |view, cx| {
+                            let moved = view
+                                .page_cursor(&page_down, true, columns, mode, width, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+            ),
+            cx,
+        );
     }
 
     fn popup(&self, cx: &mut Context<Self>) -> Option<Popup> {
@@ -102,15 +563,19 @@ impl Shelves {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render(
         &mut self,
         sections: Rc<Vec<GenreSection>>,
         mode: Mode,
         width: Pixels,
         viewport: Viewport,
+        outer: ScrollHandle,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.outer = Some(outer);
+        self.viewport = viewport;
         while self.rails.len() < sections.len() {
             let mut glide = Glide::default();
             glide.watch(self.host);
@@ -119,11 +584,46 @@ impl Shelves {
         for (scroll, glide) in &self.rails {
             glide.sync(scroll);
         }
-
+        self.register_surface(sections.clone(), mode, width, cx);
         let heights: Vec<Pixels> = sections
             .iter()
             .map(|section| self.height(section, mode, width, window, cx))
             .collect();
+        if matches!(mode, Mode::Grid) {
+            let columns = CardGrid::layout(width).columns;
+            let tops = Deck::tops(&heights, STACK_GAP);
+            let bottom = viewport.top + viewport.height;
+            let visible = |place: usize, section: &GenreSection| {
+                let top = tops[place];
+                top < bottom && top + heights[place] > viewport.top && section.items.len() > columns
+            };
+            let active = self.active_rail.filter(|place| {
+                sections
+                    .get(*place)
+                    .is_some_and(|section| visible(*place, section))
+            });
+            let selected = self.cursor.map(|(place, _)| place).filter(|place| {
+                sections
+                    .get(*place)
+                    .is_some_and(|section| visible(*place, section))
+            });
+            let place = active.or(selected).or_else(|| {
+                sections
+                    .iter()
+                    .enumerate()
+                    .find(|(place, section)| visible(*place, section))
+                    .map(|(place, _)| place)
+            });
+            self.active_rail = place;
+            if let Some(place) = place {
+                let (scroll, glide) = &self.rails[place];
+                motion::set_horizontal(scroll, glide, cx);
+            } else {
+                motion::clear_horizontal(cx);
+            }
+        } else {
+            motion::clear_horizontal(cx);
+        }
         let me = cx.entity().downgrade();
         let above = self.above.clone();
 
@@ -205,7 +705,16 @@ impl Shelves {
             .iter()
             .take(lanes * ROWS)
             .enumerate()
-            .map(|(index, item)| self.card(place * 100 + index, item, None, me, cx))
+            .map(|(index, item)| {
+                self.card(
+                    place * 100 + index,
+                    item,
+                    None,
+                    self.cursor == Some((place, index)),
+                    me,
+                    cx,
+                )
+            })
             .collect();
 
         div()
@@ -276,13 +785,22 @@ impl Shelves {
                     .restrict_scroll_to_axis()
                     .track_scroll(&handle)
                     .on_scroll_wheel({
+                        let owner = me.clone();
                         let scroll = handle.clone();
                         let glide = glide.clone();
-                        move |event: &ScrollWheelEvent, window, _| {
+                        move |event: &ScrollWheelEvent, window, cx| {
+                            owner
+                                .update(cx, |view, cx| {
+                                    view.active_rail = Some(place);
+                                    cx.notify();
+                                })
+                                .ok();
                             if event.delta.precise() {
+                                motion::touch_horizontal(&scroll, &glide, cx);
                                 return;
                             }
                             glide.nudge(&scroll, window);
+                            motion::promote_horizontal(&scroll, &glide, cx);
                         }
                     })
                     .child(
@@ -302,10 +820,12 @@ impl Shelves {
                                 };
 
                                 let holder = view.downgrade();
-                                view.read(cx).card(
+                                let shelves = view.read(cx);
+                                shelves.card(
                                     place * 100 + index,
                                     item,
                                     Some(card),
+                                    shelves.cursor == Some((place, index)),
                                     &holder,
                                     cx,
                                 )
@@ -331,11 +851,11 @@ impl Shelves {
             .items_center()
             .gap_1()
             .child(
-                self.arrow(self.tag("previous", place), false, handle, glide, me)
+                self.arrow(self.tag("previous", place), place, false, handle, glide, me)
                     .disabled(at >= -STEADY),
             )
             .child(
-                self.arrow(self.tag("next", place), true, handle, glide, me)
+                self.arrow(self.tag("next", place), place, true, handle, glide, me)
                     .disabled(reach > Pixels::ZERO && at <= STEADY - reach),
             )
             .into_any_element()
@@ -344,6 +864,7 @@ impl Shelves {
     fn arrow(
         &self,
         id: impl Into<ElementId>,
+        place: usize,
         forward: bool,
         handle: &ScrollHandle,
         glide: &Glide,
@@ -365,8 +886,13 @@ impl Shelves {
                 false => "common-previous",
             })
             .on_click(move |_, window, cx| {
+                motion::touch_horizontal(&handle, &glide, cx);
                 slide(&handle, &glide, forward, window);
-                me.update(cx, |_, cx| cx.notify()).ok();
+                me.update(cx, |view, cx| {
+                    view.active_rail = Some(place);
+                    cx.notify();
+                })
+                .ok();
             })
     }
 
@@ -375,13 +901,14 @@ impl Shelves {
         id: usize,
         item: &GenreItem,
         tile: Option<Pixels>,
+        chosen: bool,
         me: &WeakEntity<Self>,
         cx: &App,
     ) -> AnyElement {
         match item {
-            GenreItem::Playlist(playlist) => self.playlist_card(id, playlist, tile, me, cx),
-            GenreItem::Album(album) => self.album_card(id, album, tile, me, cx),
-            GenreItem::Genre(genre) => plate(slot("genre", id), genre, tile, cx),
+            GenreItem::Playlist(playlist) => self.playlist_card(id, playlist, tile, chosen, me, cx),
+            GenreItem::Album(album) => self.album_card(id, album, tile, chosen, me, cx),
+            GenreItem::Genre(genre) => plate(slot("genre", id), genre, tile, chosen, cx),
         }
     }
 
@@ -390,11 +917,12 @@ impl Shelves {
         id: usize,
         playlist: &Playlist,
         tile: Option<Pixels>,
+        chosen: bool,
         me: &WeakEntity<Self>,
         cx: &App,
     ) -> AnyElement {
         cards::playlist_card(slot("playlist", id), playlist, &self.playback, cx)
-            .map(|card| dressed(card, tile, cx))
+            .map(|card| dressed(card.chosen(chosen), tile, cx))
             .menu(opener(me, Item::Playlist(playlist.clone())))
             .into_any_element()
     }
@@ -404,11 +932,12 @@ impl Shelves {
         id: usize,
         album: &Album,
         tile: Option<Pixels>,
+        chosen: bool,
         me: &WeakEntity<Self>,
         cx: &App,
     ) -> AnyElement {
         cards::album_card(slot("album", id), album, &self.playback, cx)
-            .map(|card| dressed(card, tile, cx))
+            .map(|card| dressed(card.chosen(chosen), tile, cx))
             .menu(opener(me, Item::Album(album.clone())))
             .into_any_element()
     }
@@ -434,6 +963,7 @@ pub(crate) fn plate(
     id: impl Into<ElementId>,
     genre: &music::Genre,
     tile: Option<Pixels>,
+    chosen: bool,
     cx: &App,
 ) -> AnyElement {
     let opened = SharedString::from(genre.id.clone());
@@ -442,7 +972,7 @@ pub(crate) fn plate(
         .cover(genre.cover.clone())
         .fallback("icons/music.svg")
         .weight(FontWeight::SEMIBOLD)
-        .map(|card| dressed(card, tile, cx))
+        .map(|card| dressed(card.chosen(chosen), tile, cx))
         .press(move |_, _, cx| navigate(Destination::Genre(opened.clone()), cx))
         .into_any_element()
 }
@@ -466,7 +996,7 @@ pub(crate) fn grid(
         .draw(move |place, _, cx| {
             let first = place * lanes;
             let cells = (first..(first + lanes).min(genres.len()))
-                .map(|index| plate((id, index), &genres[index], None, cx));
+                .map(|index| plate((id, index), &genres[index], None, false, cx));
 
             div()
                 .flex()

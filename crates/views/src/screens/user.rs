@@ -11,6 +11,7 @@ use crate::shared::cards;
 use crate::shared::cells;
 use crate::shared::hero::{HeroMetaStrip, PageHero};
 use crate::shared::menus::playlist_menu;
+use crate::shared::motion;
 
 const FALLBACK: &str = "icons/user.svg";
 const PENDING: usize = 6;
@@ -143,6 +144,7 @@ impl UserView {
 
 impl Render for UserView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("user-page", &self.scrollbar, cx);
         let theme = *cx.theme();
         let pad = theme.metrics.inset;
         let room = cells::content_width(window, pad * 2., cx);
