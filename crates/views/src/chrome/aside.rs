@@ -24,13 +24,15 @@ use ui::{
     ActiveTheme as _, Avatar, Button, Card, DraggedPin, Edge, Glowing as _, Initials, Motion,
     Motioned as _, PREFETCH_REACH, Pin, Pinnable as _, Popup, Scrollbar, Scroller, Spot, Springs,
     Tails as _, Text, Vacancy, drop_gap, drop_marker, ease_out_cubic, ease_out_expo, eyebrow,
-    faint, mix, prefetch, snapped, vacant,
+    faint, mix, prefetch, scrolled, snapped, vacant,
 };
 use unicode_bidi::{BidiClass, Direction};
 
 use crate::chrome::{Chrome, section_label};
 use crate::shared::menus::ItemMenu;
+use crate::shared::panes::Id;
 use crate::shared::pins::Pinned as _;
+use crate::shared::surface;
 use crate::shared::{effects, quiet};
 
 const QUEUE: &str = "queue";
@@ -161,6 +163,7 @@ pub(crate) struct VerseLook {
 #[derive(Clone, Copy)]
 struct RowLook {
     playing: bool,
+    selected: bool,
     drop_line: Option<Edge>,
     /// Whether the row is a song someone queued by hand, which names who did when it is known.
     queued: bool,
@@ -225,6 +228,9 @@ pub(crate) struct Aside {
     drop_gap: Option<usize>,
     scroll: UniformListScrollHandle,
     scrollbar: Entity<Scrollbar>,
+    focus: gpui::FocusHandle,
+    queue_cursor: Option<QueuePosition>,
+    seen_queue_scroll: Pixels,
     past_len: usize,
     /// The id of the steered device's track the list was last pinned for, or `None` over this
     /// app's own queue. A change pins the now-playing row again.
@@ -333,6 +339,9 @@ impl Aside {
             drop_gap: None,
             scroll,
             scrollbar,
+            focus: cx.focus_handle(),
+            queue_cursor: None,
+            seen_queue_scroll: Pixels::ZERO,
             past_len: 0,
             queue_track: None,
             anchor: true,
@@ -679,6 +688,7 @@ impl Aside {
     ) -> gpui::Stateful<gpui::Div> {
         let RowLook {
             playing,
+            selected,
             drop_line,
             queued,
             remote,
@@ -745,6 +755,7 @@ impl Aside {
                 .when_some(added, |this, added| this.child(adder(added, &theme))),
         )
         .tint(title)
+        .chosen(selected)
         .when(track.explicit, Card::explicit)
         .when(!remote || current, |card| {
             card.play(
@@ -1930,6 +1941,355 @@ impl Aside {
         Some((name, place))
     }
 
+    pub(crate) fn focus_handle(&self) -> gpui::FocusHandle {
+        self.focus.clone()
+    }
+
+    fn track_slots(sections: &Sections) -> Vec<(usize, QueuePosition)> {
+        (0..sections.len())
+            .filter_map(|index| match sections.slot(index) {
+                Some(Slot::Track(position)) => Some((index, position)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reconcile_queue_scroll(&mut self, window: &Window, cx: &App) {
+        let sections = self.playback.read(cx).shown_queue(cx).sections;
+        let positions = Self::track_slots(&sections);
+        let Some(current) = self.queue_cursor.and_then(|cursor| {
+            positions
+                .iter()
+                .position(|(_, position)| *position == cursor)
+        }) else {
+            self.queue_cursor = None;
+            return;
+        };
+        let scroll = &self.scroll.0.borrow().base_handle;
+        let row = snapped(cx.theme().metrics.list_row, window);
+        let offset = scrolled(scroll);
+        let height = scroll.bounds().size.height;
+        let slot = positions[current].0;
+        let top = row * slot as f32;
+        if top >= offset && top + row <= offset + height {
+            return;
+        }
+        let target = match top < offset {
+            true => (offset / row).ceil() as usize,
+            false => ((offset + height - row).max(Pixels::ZERO) / row).floor() as usize,
+        };
+        let Some((_, position)) = positions
+            .iter()
+            .min_by_key(|(slot, _)| (*slot as isize - target as isize).unsigned_abs())
+        else {
+            return;
+        };
+        self.queue_cursor = Some(*position);
+    }
+
+    fn move_queue(&mut self, sections: &Sections, delta: isize) -> bool {
+        let positions = Self::track_slots(sections);
+        if positions.is_empty() {
+            return false;
+        }
+        let current = self.queue_cursor.and_then(|cursor| {
+            positions
+                .iter()
+                .position(|(_, position)| *position == cursor)
+        });
+        let next = match current {
+            Some(index) => (index as isize + delta).clamp(0, positions.len() as isize - 1) as usize,
+            None if delta < 0 => positions.len() - 1,
+            None => 0,
+        };
+        self.queue_cursor = positions.get(next).map(|(_, position)| *position);
+        if let Some((slot, _)) = positions.get(next) {
+            self.scroll
+                .scroll_to_item(*slot, gpui::ScrollStrategy::Nearest);
+        }
+        true
+    }
+
+    fn select_queue_edge(&mut self, sections: &Sections, last: bool) {
+        let positions = Self::track_slots(sections);
+        let index = match last {
+            true => positions.len().checked_sub(1),
+            false => (!positions.is_empty()).then_some(0),
+        };
+        let Some(index) = index else {
+            return;
+        };
+        self.queue_cursor = positions.get(index).map(|(_, position)| *position);
+        if let Some((slot, _)) = positions.get(index) {
+            self.scroll
+                .scroll_to_item(*slot, gpui::ScrollStrategy::Nearest);
+        }
+    }
+
+    fn select_queue_page(&mut self, sections: &Sections, down: bool, cx: &App) {
+        let positions = Self::track_slots(sections);
+        if positions.is_empty() {
+            return;
+        }
+        let current = self.queue_cursor.and_then(|cursor| {
+            positions
+                .iter()
+                .position(|(_, position)| *position == cursor)
+        });
+        let row = cx.theme().metrics.list_row;
+        let visible = (self.scroll.0.borrow().base_handle.bounds().size.height / row)
+            .floor()
+            .max(1.) as usize;
+        let index = match (current, down) {
+            (Some(index), true) => index.saturating_add(visible).min(positions.len() - 1),
+            (Some(index), false) => index.saturating_sub(visible),
+            (None, true) => 0,
+            (None, false) => positions.len() - 1,
+        };
+        self.queue_cursor = positions.get(index).map(|(_, position)| *position);
+        if let Some((slot, _)) = positions.get(index) {
+            self.scroll
+                .scroll_to_item(*slot, gpui::ScrollStrategy::Nearest);
+        }
+    }
+
+    fn activate_queue(&mut self, remote: bool, cx: &mut Context<Self>) {
+        let Some(position) = self.queue_cursor else {
+            return;
+        };
+        let sections = self.playback.read(cx).shown_queue(cx).sections;
+        if !Self::track_slots(&sections)
+            .iter()
+            .any(|(_, candidate)| *candidate == position)
+        {
+            self.queue_cursor = None;
+            return;
+        }
+        if remote && position != QueuePosition::Current {
+            return;
+        }
+        let uid = self.queue.read(cx).uid(position).map(str::to_owned);
+        self.playback.update(cx, |playback, cx| match position {
+            QueuePosition::Current => playback.toggle_play(cx),
+            _ => {
+                if let Some(uid) = uid.as_deref() {
+                    playback.play_queue(uid, cx);
+                }
+            }
+        });
+    }
+
+    fn nudge_lyrics(&mut self, delta: Pixels, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.verse_bar.update(cx, |bar, cx| {
+            bar.move_by(delta, window);
+            cx.notify();
+        });
+        true
+    }
+
+    fn register_queue_surface(&self, sections: Sections, remote: bool, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let ready = me.clone();
+        let selected = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let enter = me.clone();
+        let activate = me.clone();
+        let escape = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register_for(
+            Id::Right,
+            surface::Surface::custom(
+                move |window, cx| {
+                    ready
+                        .upgrade()
+                        .is_some_and(|aside| aside.read(cx).focus.is_focused(window))
+                },
+                move |_| !sections.is_empty(),
+                move |cx| {
+                    selected
+                        .upgrade()
+                        .is_some_and(|aside| aside.read(cx).queue_cursor.is_some())
+                },
+                move |_, cx| {
+                    next.update(cx, |aside, cx| {
+                        let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                        aside.move_queue(&sections, 1);
+                        cx.notify();
+                    })
+                    .is_ok()
+                },
+                move |_, cx| {
+                    previous
+                        .update(cx, |aside, cx| {
+                            let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                            aside.move_queue(&sections, -1);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                |_, _| false,
+                |_, _| false,
+                move |_, cx| {
+                    enter
+                        .update(cx, |aside, cx| {
+                            if aside.queue_cursor.is_some() {
+                                aside.activate_queue(remote, cx);
+                            } else {
+                                let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                                aside.move_queue(&sections, 1);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                },
+                move |_, cx| {
+                    activate
+                        .update(cx, |aside, cx| aside.activate_queue(remote, cx))
+                        .ok();
+                },
+                move |_, cx| {
+                    escape
+                        .update(cx, |aside, cx| {
+                            aside.queue_cursor = None;
+                            cx.notify();
+                        })
+                        .ok();
+                },
+            )
+            .edges(
+                move |_, cx| {
+                    first
+                        .update(cx, |aside, cx| {
+                            let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                            aside.select_queue_edge(&sections, false);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                move |_, cx| {
+                    last.update(cx, |aside, cx| {
+                        let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                        aside.select_queue_edge(&sections, true);
+                        cx.notify();
+                    })
+                    .is_ok()
+                },
+                move |_, cx| {
+                    page_up
+                        .update(cx, |aside, cx| {
+                            let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                            aside.select_queue_page(&sections, false, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                move |_, cx| {
+                    page_down
+                        .update(cx, |aside, cx| {
+                            let sections = aside.playback.read(cx).shown_queue(cx).sections;
+                            aside.select_queue_page(&sections, true, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+            ),
+            cx,
+        );
+    }
+
+    fn register_lyrics_surface(&self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let focus = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register_for(
+            Id::Right,
+            surface::Surface::custom(
+                move |window, cx| {
+                    focus
+                        .upgrade()
+                        .is_some_and(|aside| aside.read(cx).focus.is_focused(window))
+                },
+                |_| true,
+                |_| false,
+                move |window, cx| {
+                    next.update(cx, |aside, cx| {
+                        let row = cx.theme().metrics.row;
+                        aside.nudge_lyrics(row, window, cx)
+                    })
+                    .unwrap_or(false)
+                },
+                move |window, cx| {
+                    previous
+                        .update(cx, |aside, cx| {
+                            let row = -cx.theme().metrics.row;
+                            aside.nudge_lyrics(row, window, cx)
+                        })
+                        .unwrap_or(false)
+                },
+                |_, _| false,
+                |_, _| false,
+                |_, _| {},
+                |_, _| {},
+                |_, _| {},
+            )
+            .edges(
+                move |window, cx| {
+                    first
+                        .update(cx, |aside, cx| {
+                            aside.verse_bar.update(cx, |bar, cx| {
+                                bar.top();
+                                bar.refresh_view(cx);
+                                cx.notify();
+                            });
+                            window.refresh();
+                            true
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    last.update(cx, |aside, cx| {
+                        aside.verse_bar.update(cx, |bar, cx| {
+                            bar.bottom();
+                            bar.refresh_view(cx);
+                            cx.notify();
+                        });
+                        window.refresh();
+                        true
+                    })
+                    .unwrap_or(false)
+                },
+                move |window, cx| {
+                    page_up
+                        .update(cx, |aside, cx| {
+                            let amount =
+                                aside.verse_bar.read(cx).scroll().bounds().size.height / 2.;
+                            aside.nudge_lyrics(-amount, window, cx)
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    page_down
+                        .update(cx, |aside, cx| {
+                            let amount =
+                                aside.verse_bar.read(cx).scroll().bounds().size.height / 2.;
+                            aside.nudge_lyrics(amount, window, cx)
+                        })
+                        .unwrap_or(false)
+                },
+            ),
+            cx,
+        );
+    }
+
     fn rows(
         &self,
         listing: QueueView,
@@ -1943,6 +2303,7 @@ impl Aside {
         let drop_gap = self.drop_gap;
         let upcoming = sections.upcoming;
         let audible = listing.playing;
+        let selected = self.queue_cursor;
         // A uniform list only draws rows inside its padding, so the space under a see-through
         // player bar is made of blank rows, which keeps the songs scrolling under it drawn.
         let under = (self.bottom(cx) / cx.theme().metrics.list_row).ceil() as usize;
@@ -1993,6 +2354,7 @@ impl Aside {
                         };
                         let look = RowLook {
                             playing: audible && position == QueuePosition::Current,
+                            selected: selected == Some(position),
                             drop_line,
                             queued: sections.kind(position) == Some(state::QueueKind::Queued),
                             remote,
@@ -2019,6 +2381,33 @@ impl Render for Aside {
         let sections = listing.sections.clone();
         let remote = !listing.editable();
         let empty = sections.is_empty();
+        match self.tab {
+            SideTab::Queue if !empty => {
+                self.register_queue_surface(sections.clone(), remote, cx);
+                let offset = scrolled(&self.scroll.0.borrow().base_handle);
+                if offset != self.seen_queue_scroll {
+                    self.seen_queue_scroll = offset;
+                    let owner = cx.entity().downgrade();
+                    window.on_next_frame(move |window, cx| {
+                        owner
+                            .update(cx, |aside, cx| {
+                                aside.reconcile_queue_scroll(window, cx);
+                                cx.notify();
+                            })
+                            .ok();
+                    });
+                }
+            }
+            SideTab::Lyrics => {
+                self.register_lyrics_surface(cx);
+                self.queue_cursor = None;
+            }
+            _ => {
+                surface::remove(Id::Right, cx);
+                self.queue_cursor = None;
+                self.seen_queue_scroll = Pixels::ZERO;
+            }
+        }
         if !cx.has_active_drag() {
             self.drop_gap = None;
         }
@@ -2040,6 +2429,7 @@ impl Render for Aside {
 
         div()
             .id("aside")
+            .track_focus(&self.focus)
             .role(Role::Complementary)
             .aria_label(match self.tab {
                 SideTab::Queue => t!("queue-title"),

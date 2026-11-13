@@ -14,6 +14,7 @@ use state::{Home, Network, Playback, Sonora};
 use ui::{ActiveTheme as _, Lazy, Mode, Popup, Scrollbar, Scroller};
 
 use crate::shared::cells;
+use crate::shared::motion;
 use crate::shared::picks::{Picks, Shape};
 use crate::shared::shelves::Shelves;
 use crate::shared::tracks::{PlaybackStatus, playback_status};
@@ -63,6 +64,10 @@ impl HomeView {
 
         cx.observe(&home, |this, _, cx| {
             this.menus.reset(cx);
+            this.shelves.update(cx, |shelves, cx| {
+                shelves.reset();
+                cx.notify();
+            });
             this.context_menu = None;
             cx.notify();
         })
@@ -185,6 +190,7 @@ impl Render for HomeView {
                 .into_any_element();
         }
 
+        motion::page("home-page", &self.scrollbar, cx);
         let theme = *cx.theme();
         let available = cells::content_width(window, theme.metrics.inset * 2., cx);
         if (available - self.width).abs() >= STEADY {
@@ -205,11 +211,15 @@ impl Render for HomeView {
         let sections = self.home.read(cx).sections();
         let feeding = self.home.read(cx).is_feeding();
         let width = self.width;
+        let scroll = self.scrollbar.read(cx).scroll().clone();
         let shelves = self
             .shelves
             .update(cx, |shelves, cx| match sections.is_empty() && feeding {
-                true => shelves.pending(width, cx),
-                false => vec![shelves.render(sections, Mode::Grid, width, window, cx)],
+                true => {
+                    motion::clear_horizontal(cx);
+                    shelves.pending(width, cx)
+                }
+                false => vec![shelves.render(sections, Mode::Grid, width, scroll, window, cx)],
             });
 
         Scroller::new("home-page", &self.scrollbar)

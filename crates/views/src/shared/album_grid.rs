@@ -75,6 +75,7 @@ pub(crate) struct AlbumGrid {
     layout: CardLayout,
     albums: Vec<(usize, Album)>,
     playback: Entity<Playback>,
+    selected: Option<usize>,
 }
 
 impl AlbumGrid {
@@ -89,7 +90,13 @@ impl AlbumGrid {
             layout: CardLayout::new(available),
             albums: albums.into_iter().collect(),
             playback,
+            selected: None,
         }
+    }
+
+    pub(crate) fn selected(mut self, selected: Option<usize>) -> Self {
+        self.selected = selected;
+        self
     }
 }
 
@@ -100,9 +107,19 @@ impl RenderOnce for AlbumGrid {
             layout,
             albums,
             playback,
+            selected,
         } = self;
         let cards = albums.into_iter().map(|(index, album)| {
-            album_card(id, index, &album, &playback, layout.card, cx).into_any_element()
+            album_card(
+                id,
+                index,
+                &album,
+                &playback,
+                layout.card,
+                selected == Some(index),
+                cx,
+            )
+            .into_any_element()
         });
 
         div()
@@ -121,10 +138,12 @@ fn album_card(
     album: &Album,
     playback: &Entity<Playback>,
     width: Pixels,
+    chosen: bool,
     cx: &App,
 ) -> Card {
     cards::album_card((id, index), album, playback, cx)
         .tile(width)
+        .chosen(chosen)
         .flat()
 }
 

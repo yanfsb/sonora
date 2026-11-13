@@ -15,6 +15,8 @@ use ui::Input;
 
 use crate::chrome::Chrome;
 use crate::shared::menus::{ItemMenu, album_menu, artist_menu, playlist_menu};
+use crate::shared::motion;
+use crate::shared::surface;
 use state::{
     AlbumHit, ArtistHit, Genres, Hit, Kind, Network, Playback, PlaylistHit, Search, Sonora,
 };
@@ -587,6 +589,117 @@ impl SearchView {
         field.flex_none().px(gutter).into_any_element()
     }
 
+    fn register_surface(&self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let focus = me.clone();
+        let ready = me.clone();
+        let selected = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let left = me.clone();
+        let right = me.clone();
+        let enter = me.clone();
+        let activate = me.clone();
+        let escape = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register(
+            surface::Surface::custom(
+                move |window, cx| {
+                    focus
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).focus.is_focused(window))
+                },
+                move |cx| {
+                    ready.upgrade().is_some_and(|view| {
+                        let search = view.read(cx).search.clone();
+                        let search = search.read(cx);
+                        !search.hits().is_empty() || search.best().is_some()
+                    })
+                },
+                move |cx| {
+                    selected.upgrade().is_some_and(|view| {
+                        let view = view.read(cx);
+                        view.cursor.is_some() || view.on_best
+                    })
+                },
+                move |window, cx| {
+                    next.update(cx, |view, cx| view.select_next(&SelectNext, window, cx))
+                        .is_ok()
+                },
+                move |window, cx| {
+                    previous
+                        .update(cx, |view, cx| {
+                            view.select_previous(&SelectPrevious, window, cx)
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    left.update(cx, |view, cx| view.select_left(&SelectLeft, window, cx))
+                        .is_ok()
+                },
+                move |window, cx| {
+                    right
+                        .update(cx, |view, cx| view.select_right(&SelectRight, window, cx))
+                        .is_ok()
+                },
+                move |window, cx| {
+                    enter
+                        .update(cx, |view, cx| {
+                            if view.cursor.is_some() || view.on_best {
+                                view.activate_hit(&Activate, window, cx);
+                            } else {
+                                view.select_next(&SelectNext, window, cx);
+                            }
+                        })
+                        .ok();
+                },
+                move |window, cx| {
+                    activate
+                        .update(cx, |view, cx| view.activate_hit(&Activate, window, cx))
+                        .ok();
+                },
+                move |window, cx| {
+                    escape
+                        .update(cx, |view, cx| view.deselect_hit(&Deselect, window, cx))
+                        .ok();
+                },
+            )
+            .edges(
+                move |window, cx| {
+                    first
+                        .update(cx, |view, cx| {
+                            view.select_edge(false, stacked(window, cx), window, cx);
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    last.update(cx, |view, cx| {
+                        view.select_edge(true, stacked(window, cx), window, cx);
+                    })
+                    .is_ok()
+                },
+                move |window, cx| {
+                    page_up
+                        .update(cx, |view, cx| {
+                            view.select_page(false, stacked(window, cx), window, cx);
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    page_down
+                        .update(cx, |view, cx| {
+                            view.select_page(true, stacked(window, cx), window, cx);
+                        })
+                        .is_ok()
+                },
+            ),
+            cx,
+        );
+    }
+
     fn select_next(&mut self, _: &SelectNext, window: &mut Window, cx: &mut Context<Self>) {
         if self.panel_open(window, cx) {
             if let Some(last) = self.offers(cx).len().checked_sub(1) {
@@ -641,6 +754,29 @@ impl SearchView {
             if std::mem::take(&mut self.on_best) {
                 self.return_to_field(window, cx);
                 cx.notify();
+                return;
+            }
+            if self.search.read(cx).query().trim().is_empty() {
+                return;
+            }
+            let stacked = stacked(window, cx);
+            let last = (0..columns(stacked)).rev().find_map(|column| {
+                let count = self.seats(kinds(column, stacked), cx).len();
+                (count > 0).then_some((column, count - 1))
+            });
+            match last {
+                Some((column, row)) => {
+                    self.place(column, row);
+                    window.focus(&self.focus, cx);
+                    self.reveal(window, cx);
+                    cx.notify();
+                }
+                None if self.search.read(cx).best().is_some() => {
+                    self.on_best = true;
+                    window.focus(&self.focus, cx);
+                    cx.notify();
+                }
+                None => {}
             }
             return;
         };
@@ -685,6 +821,72 @@ impl SearchView {
             return;
         };
         self.hop(next, stacked, cx);
+        window.focus(&self.focus, cx);
+        self.reveal(window, cx);
+        cx.notify();
+    }
+
+    fn select_edge(
+        &mut self,
+        last: bool,
+        stacked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = match last {
+            true => (0..columns(stacked)).rev().find_map(|column| {
+                let count = self.seats(kinds(column, stacked), cx).len();
+                (count > 0).then_some((column, count - 1))
+            }),
+            false => self.first_filled(0, stacked, cx).map(|column| (column, 0)),
+        };
+        match (last, target, self.search.read(cx).best().is_some()) {
+            (false, _, true) => self.on_best = true,
+            (_, Some((column, row)), _) => {
+                self.on_best = false;
+                self.place(column, row);
+            }
+            (true, None, true) => self.on_best = true,
+            _ => return,
+        }
+        window.focus(&self.focus, cx);
+        self.reveal(window, cx);
+        cx.notify();
+    }
+
+    fn select_page(
+        &mut self,
+        down: bool,
+        stacked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((column, row)) = self.cursor else {
+            self.select_edge(!down, stacked, window, cx);
+            return;
+        };
+        let visible = (self
+            .bar(column, stacked)
+            .read(cx)
+            .scroll()
+            .bounds()
+            .size
+            .height
+            / snapped(cx.theme().metrics.list_row, window).max(gpui::px(1.)))
+        .floor()
+        .max(1.) as usize;
+        let last = self
+            .seats(kinds(column, stacked), cx)
+            .len()
+            .saturating_sub(1);
+        self.on_best = false;
+        self.place(
+            column,
+            match down {
+                true => row.saturating_add(visible).min(last),
+                false => row.saturating_sub(visible),
+            },
+        );
         window.focus(&self.focus, cx);
         self.reveal(window, cx);
         cx.notify();
@@ -1537,6 +1739,13 @@ impl Render for SearchView {
             false => Pixels::ZERO,
         };
         let asked = !self.search.read(cx).query().trim().is_empty();
+        self.register_surface(cx);
+        let page = match (asked, stacked) {
+            (false, _) => &self.browsing,
+            (true, true) => &self.mixed,
+            (true, false) => &self.songs,
+        };
+        motion::page("search-page", page, cx);
         let context_menu = self.context_menu.clone().map(|(target, position)| {
             let menu = match target {
                 HitMenu::Song(track) => self.track_menu.for_track(&track, cx),

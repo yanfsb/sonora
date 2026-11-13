@@ -21,6 +21,7 @@ use crate::screens::settings::{self, Row};
 use crate::shared::confirm::{self, Confirm};
 use crate::shared::device_menu::DeviceMenu;
 use crate::shared::equalizer::{preset_key, sound_picker};
+use crate::shared::motion;
 
 use graph::{EqualizerGraph, EqualizerSpectrum};
 use meter::OutputMeter;
@@ -801,6 +802,7 @@ impl EqualizerView {
 
 impl Render for EqualizerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("equalizer", &self.scrollbar, cx);
         let room = settings::Layout::of(window, cx).room();
         let advanced = self.settings.read(cx).equalizer_advanced();
         let parts = self.parts(cx);

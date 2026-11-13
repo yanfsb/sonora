@@ -9,8 +9,8 @@ use ui::{
 use gpui::accesskit::Role;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, MouseButton, MouseDownEvent,
-    Pixels, Point, Render, ScrollHandle, SharedString, svg,
+    AnyElement, App, Context, DragMoveEvent, ElementId, Entity, FocusHandle, Focusable,
+    MouseButton, MouseDownEvent, Pixels, Point, Render, ScrollHandle, SharedString, svg,
 };
 use gpui::{Window, div, px};
 use music::Shape;
@@ -24,8 +24,10 @@ use state::{
 
 use crate::shared::menus::{ItemMenu, item_menu};
 use crate::shared::nav::{nav_icon, nav_row};
+use crate::shared::panes::Id;
 use crate::shared::pins::leaving;
 use crate::shared::playlist_editor::{Edit, PlaylistEditor};
+use crate::shared::surface;
 
 /// The one drag list the pinned section keeps, so a pin dropped anywhere in it lands in order.
 const PINS: &str = "sidebar-pins";
@@ -83,8 +85,16 @@ const RAIL_INSET: f32 = 0.5;
 const FLYOUT_GAP: Pixels = px(4.);
 const BORDER: Pixels = px(1.);
 
+#[derive(Clone, PartialEq, Eq)]
+enum Target {
+    Navigate(Destination),
+    Group(Group),
+    Pins,
+    Pin(ui::PinKind, String),
+}
+
 /// The two navigation entries that expand into tabs rather than navigate.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Group {
     Library,
     Local,
@@ -151,6 +161,8 @@ pub(crate) struct SidebarLeft {
     context_menu: Option<(Pin, Point<Pixels>)>,
     scrollbar: Entity<ui::Scrollbar>,
     popovers: ui::Popovers,
+    focus: FocusHandle,
+    cursor: Option<Target>,
 }
 
 impl SidebarLeft {
@@ -218,7 +230,254 @@ impl SidebarLeft {
             context_menu: None,
             scrollbar,
             popovers: ui::Popovers::default(),
+            focus: cx.focus_handle(),
+            cursor: None,
         }
+    }
+
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
+    }
+
+    fn targets(&self, cx: &App) -> Vec<Target> {
+        let stocked = self.session.read(cx).authenticated()
+            || self.library.read(cx).stocked(Shelf::Streaming);
+        let shown = |entry: NavEntry| self.settings.read(cx).nav_shown(entry.id());
+        let mut targets = Vec::new();
+        for (entry, _, destination) in &NAV {
+            if entry.is_some_and(|entry| !shown(entry)) {
+                continue;
+            }
+            let group = Group::of(destination);
+            if group == Some(Group::Library) && !stocked {
+                continue;
+            }
+            match group {
+                Some(group) => {
+                    targets.push(Target::Group(group));
+                    if !self.folded() && self.opened(group) {
+                        targets.extend(
+                            LIBRARY_TABS
+                                .into_iter()
+                                .map(|(_, tab)| Target::Navigate(group.at(tab))),
+                        );
+                    }
+                }
+                None => targets.push(Target::Navigate(destination.clone())),
+            }
+        }
+        if shown(NavEntry::Pins) {
+            targets.push(Target::Pins);
+            if self.pinned_open {
+                let pins = self.pins.read(cx);
+                let pinned = pins.entries(cx);
+                targets.extend(
+                    pinned
+                        .iter()
+                        .map(|pin| Target::Pin(pin.kind, pin.id.clone())),
+                );
+                if self.settings.read(cx).sidebar_full_library() {
+                    targets.extend(
+                        pins.library(cx)
+                            .iter()
+                            .map(|pin| Target::Pin(pin.kind, pin.id.clone())),
+                    );
+                }
+            }
+        }
+        targets
+    }
+
+    fn focus_cursor(&mut self, target: Target, window: &mut Window, cx: &mut App) {
+        window.focus(&self.focus, cx);
+        self.cursor = Some(target);
+    }
+
+    fn move_cursor(&mut self, delta: isize, cx: &App) -> bool {
+        let targets = self.targets(cx);
+        if targets.is_empty() {
+            return false;
+        }
+        let current = self
+            .cursor
+            .as_ref()
+            .and_then(|target| targets.iter().position(|candidate| candidate == target));
+        let next = match current {
+            Some(index) => (index as isize + delta).clamp(0, targets.len() as isize - 1) as usize,
+            None if delta < 0 => targets.len() - 1,
+            None => 0,
+        };
+        self.cursor = targets.get(next).cloned();
+        true
+    }
+
+    fn edge_cursor(&mut self, last: bool, window: &mut Window, cx: &mut App) {
+        let targets = self.targets(cx);
+        let Some(target) = targets
+            .get(match last {
+                true => targets.len().saturating_sub(1),
+                false => 0,
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.focus_cursor(target, window, cx);
+    }
+
+    fn page_cursor(&mut self, down: bool, window: &mut Window, cx: &mut App) {
+        let targets = self.targets(cx);
+        let Some(current) = self
+            .cursor
+            .as_ref()
+            .and_then(|target| targets.iter().position(|candidate| candidate == target))
+        else {
+            self.edge_cursor(!down, window, cx);
+            return;
+        };
+        let row = cx.theme().metrics.row;
+        let visible = (self.scrollbar.read(cx).scroll().bounds().size.height / row)
+            .floor()
+            .max(1.) as usize;
+        let index = match down {
+            true => current.saturating_add(visible).min(targets.len() - 1),
+            false => current.saturating_sub(visible),
+        };
+        self.focus_cursor(targets[index].clone(), window, cx);
+    }
+
+    fn activate_cursor(&mut self, cx: &mut Context<Self>) {
+        let Some(target) = self.cursor.clone() else {
+            return;
+        };
+        match target {
+            Target::Navigate(destination) => match destination.in_settings() {
+                true => open_settings(cx),
+                false => navigate(destination, cx),
+            },
+            Target::Group(group) if self.folded() => match self.popovers.shows(group.key()) {
+                true => self.popovers.close(),
+                false => self.popovers.open(group.key()),
+            },
+            Target::Group(group) => {
+                self.flip(group);
+                cx.notify();
+            }
+            Target::Pins => self.flip_pins(cx),
+            Target::Pin(kind, id) => navigate(Destination::from(&ui::Pin::new(kind, id, "")), cx),
+        }
+    }
+
+    fn register_surface(&self, cx: &mut Context<Self>) {
+        let me = cx.entity().downgrade();
+        let focus = me.clone();
+        let ready = me.clone();
+        let selected = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let enter = me.clone();
+        let activate = me.clone();
+        let escape = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register_for(
+            Id::Left,
+            surface::Surface::custom(
+                move |window, cx| {
+                    focus
+                        .upgrade()
+                        .is_some_and(|sidebar| sidebar.read(cx).focus.is_focused(window))
+                },
+                move |cx| {
+                    ready
+                        .upgrade()
+                        .is_some_and(|sidebar| !sidebar.read(cx).targets(cx).is_empty())
+                },
+                move |cx| {
+                    selected
+                        .upgrade()
+                        .is_some_and(|sidebar| sidebar.read(cx).cursor.is_some())
+                },
+                move |_, cx| {
+                    next.update(cx, |sidebar, cx| {
+                        sidebar.move_cursor(1, cx);
+                        cx.notify();
+                    })
+                    .is_ok()
+                },
+                move |_, cx| {
+                    previous
+                        .update(cx, |sidebar, cx| {
+                            sidebar.move_cursor(-1, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                |_, _| false,
+                |_, _| false,
+                move |_, cx| {
+                    enter
+                        .update(cx, |sidebar, cx| {
+                            if sidebar.cursor.is_some() {
+                                sidebar.activate_cursor(cx);
+                            } else {
+                                sidebar.move_cursor(1, cx);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                },
+                move |_, cx| {
+                    activate
+                        .update(cx, |sidebar, cx| sidebar.activate_cursor(cx))
+                        .ok();
+                },
+                move |_, cx| {
+                    escape
+                        .update(cx, |sidebar, cx| {
+                            sidebar.cursor = None;
+                            cx.notify();
+                        })
+                        .ok();
+                },
+            )
+            .edges(
+                move |window, cx| {
+                    first
+                        .update(cx, |sidebar, cx| {
+                            sidebar.edge_cursor(false, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    last.update(cx, |sidebar, cx| {
+                        sidebar.edge_cursor(true, window, cx);
+                        cx.notify();
+                    })
+                    .is_ok()
+                },
+                move |window, cx| {
+                    page_up
+                        .update(cx, |sidebar, cx| {
+                            sidebar.page_cursor(false, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+                move |window, cx| {
+                    page_down
+                        .update(cx, |sidebar, cx| {
+                            sidebar.page_cursor(true, window, cx);
+                            cx.notify();
+                        })
+                        .is_ok()
+                },
+            ),
+            cx,
+        );
     }
 
     fn follow(&mut self, current: &Destination) {
@@ -266,7 +525,7 @@ impl SidebarLeft {
         self.rail || self.squeezed()
     }
 
-    fn breadth(&self) -> Pixels {
+    pub(crate) fn breadth(&self) -> Pixels {
         match (self.closing, self.folded()) {
             (true, _) => Pixels::ZERO,
             (false, true) => self.rail_width,
@@ -496,7 +755,11 @@ impl SidebarLeft {
                 theme.sidebar_accent,
             )
             .aria_expanded(open)
-            .on_click(cx.listener(|this, _, _, cx| this.flip_pins(cx)))
+            .selected(self.cursor == Some(Target::Pins))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.focus_cursor(Target::Pins, window, cx);
+                this.flip_pins(cx);
+            }))
             .into_any_element(),
             false => self.pins_toggle(cx),
         };
@@ -563,7 +826,10 @@ impl SidebarLeft {
                     .min_w_0()
                     .truncate(),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.flip_pins(cx)))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.focus_cursor(Target::Pins, window, cx);
+                this.flip_pins(cx);
+            }))
             .into_any_element()
     }
 
@@ -649,6 +915,8 @@ impl SidebarLeft {
         let warmed = origin.clone();
 
         let key = format!("{}-{}", pin.kind.key(), pin.id);
+        let pin_kind = pin.kind;
+        let pin_id = pin.id.clone();
         let card = Card::new(SharedString::from(format!("pinned-{key}")), pin.label())
             .aria_description(i18n::lookup(pin.kind.key(), None))
             .cover(pin.cover.clone())
@@ -672,8 +940,11 @@ impl SidebarLeft {
             })
             .meta(caption(pin.kind.key(), marked, cx))
             .lit(active && !aimed, accent)
-            .chosen(aimed)
-            .press(move |_, _, cx| navigate(destination.clone(), cx))
+            .chosen(aimed || self.cursor == Some(Target::Pin(pin_kind, pin_id.clone())))
+            .press(cx.listener(move |this, _, window, cx| {
+                this.focus_cursor(Target::Pin(pin_kind, pin_id.clone()), window, cx);
+                navigate(destination.clone(), cx);
+            }))
             .menu(cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                 this.track_menu.reset(cx);
                 this.context_menu = Some((opened.clone(), event.position));
@@ -742,6 +1013,11 @@ impl SidebarLeft {
             false => theme.muted_foreground,
         };
         let rail = self.folded();
+        let target = match group {
+            Some(group) => Target::Group(group),
+            None => Target::Navigate(destination.clone()),
+        };
+        let marked = self.cursor.as_ref() == Some(&target);
         let row = match rail {
             true => nav_icon(index, key, icon, tint, accent),
             false => nav_row(index, key, tint, accent).icon(icon),
@@ -750,20 +1026,27 @@ impl SidebarLeft {
         match group {
             Some(group) if rail => self.flyout(group, row.lit(active, accent), window, cx),
             Some(group) => row
+                .selected(marked)
                 .trailing(chevron(self.opened(group)))
                 .aria_expanded(self.opened(group))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.focus_cursor(Target::Group(group), window, cx);
                     this.flip(group);
                     cx.notify();
                 }))
                 .into_any_element(),
             None => row
+                .selected(marked)
                 .lit(active, accent)
                 .when(active, |button| button.aria_selected(true))
-                .on_click(move |_, _, cx| match destination.in_settings() {
-                    true => open_settings(cx),
-                    false => navigate(destination.clone(), cx),
-                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    let target = Target::Navigate(destination.clone());
+                    this.focus_cursor(target, window, cx);
+                    match destination.in_settings() {
+                        true => open_settings(cx),
+                        false => navigate(destination.clone(), cx),
+                    }
+                }))
                 .into_any_element(),
         }
     }
@@ -771,7 +1054,13 @@ impl SidebarLeft {
     /// A group's entry on the rail. `button` opens a menu just past the rail's edge that names
     /// the group and lists its tabs, each with its glyph and full name, and picking one
     /// navigates there.
-    fn flyout(&self, group: Group, button: Button, window: &Window, cx: &App) -> AnyElement {
+    fn flyout(
+        &self,
+        group: Group,
+        button: Button,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let current = self.trail.read(cx).current();
         let name = i18n::lookup(group.key(), None);
         let gap = window.rem_size() * RAIL_INSET + BORDER + FLYOUT_GAP;
@@ -792,6 +1081,10 @@ impl SidebarLeft {
 
         Popover::new(group.key(), self.popovers.clone())
             .button(button)
+            .selected(self.cursor == Some(Target::Group(group)))
+            .on_open(cx.listener(move |this, _, window, cx| {
+                this.focus_cursor(Target::Group(group), window, cx);
+            }))
             .menu(menu)
             .commands()
             .w_full()
@@ -813,9 +1106,13 @@ impl SidebarLeft {
 
             nav_row(id, key, tint, accent)
                 .flex_1()
+                .selected(self.cursor == Some(Target::Navigate(destination.clone())))
                 .lit(chosen, accent)
                 .when(chosen, |button| button.aria_selected(true))
-                .on_click(move |_, _, cx| navigate(destination.clone(), cx))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.focus_cursor(Target::Navigate(destination.clone()), window, cx);
+                    navigate(destination.clone(), cx);
+                }))
         };
 
         Tabs::new()
@@ -919,6 +1216,7 @@ impl Render for SidebarLeft {
         rows.extend(self.pins(window, cx));
 
         let overlaid = self.overlays();
+        self.register_surface(cx);
         let rail = self.folded();
         // A group's menu belongs to the rail, so one left open must not come back with it.
         if !rail
@@ -930,6 +1228,7 @@ impl Render for SidebarLeft {
         }
         // The edge drags past the rail to zero, so a drag can close the sidebar.
         let panel = Panel::new("sidebar-left", Side::Left, self.breadth())
+            .track_focus(&self.focus)
             .limits(Pixels::ZERO, MAX_WIDTH)
             .reach(self.ceiling(window, cx))
             .grip_above(super::Chrome::bottom(cx))
@@ -1038,6 +1337,12 @@ impl Render for SidebarLeft {
 /// How wide the left sidebar stands from its saved width, which the settings rail matches.
 pub(crate) fn sidebar_width(settings: &AppSettings) -> Pixels {
     px(settings.sidebar_width()).clamp(MIN_WIDTH, MAX_WIDTH)
+}
+
+impl Focusable for SidebarLeft {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
 }
 
 /// One pinned row's width plus the rail's padding and border.

@@ -25,6 +25,7 @@ use ui::{
 
 use crate::shared::menus::{album_menu, playlist_menu};
 use crate::shared::trouble;
+use crate::shared::{motion, surface};
 
 use crate::chrome::tools::{self, Sliders};
 use crate::chrome::{Chrome, Searchable, Toolbar, Tooled};
@@ -800,7 +801,9 @@ impl Render for DetailView {
                 .into_any_element();
         }
 
+        motion::page("detail-page", &self.scrollbar, cx);
         self.table.claim(cx);
+        surface::register(surface::Surface::table(&self.table), cx);
         let inset = cx.theme().metrics.inset;
         let width = cells::content_width(window, Pixels::ZERO, cx);
         if (width - self.width).abs() >= px(0.5) {
