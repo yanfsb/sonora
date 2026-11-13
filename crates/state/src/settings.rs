@@ -475,6 +475,7 @@ struct Values {
     romanization_scripts: RomanizationScripts,
     adaptive_menu: bool,
     check_updates: bool,
+    vim_mode: bool,
     /// The release channel chosen in settings, by its id. Empty follows the running build's own
     /// channel, and a copy a package manager installed ignores it.
     update_channel: String,
@@ -687,6 +688,7 @@ impl Default for Values {
             romanization_scripts: RomanizationScripts::default(),
             adaptive_menu: false,
             check_updates: cfg!(target_os = "windows") || updates_itself(),
+            vim_mode: false,
             update_channel: String::new(),
             close_to_tray: true,
             tray_icon: true,
@@ -1238,6 +1240,10 @@ impl AppSettings {
 
     pub fn check_updates(&self) -> bool {
         self.values.check_updates
+    }
+
+    pub fn vim_mode(&self) -> bool {
+        self.values.vim_mode
     }
 
     pub fn close_to_tray(&self) -> bool {
@@ -1861,6 +1867,11 @@ impl AppSettings {
 
     pub fn set_check_updates(&mut self, check_updates: bool, cx: &mut Context<Self>) {
         self.values.check_updates = check_updates;
+        self.schedule_save(cx);
+    }
+
+    pub fn set_vim_mode(&mut self, vim_mode: bool, cx: &mut Context<Self>) {
+        self.values.vim_mode = vim_mode;
         self.schedule_save(cx);
     }
 

@@ -18,6 +18,7 @@ impl SettingsView {
             Group::new("settings-group-startup", "icons/house.svg").rows([
                 Slot::Startup,
                 Slot::Entries,
+                Slot::VimMode,
                 Slot::Language,
             ]),
             Group::new("settings-group-window", "icons/panel-left-open.svg")
@@ -105,6 +106,23 @@ impl SettingsView {
             t!("settings-entries"),
             picker.name(t!("settings-entries")).into_any_element(),
         )
+    }
+
+    pub(super) fn vim_mode_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.settings.read(cx).vim_mode();
+
+        super::Row::new(
+            t!("settings-vim-mode"),
+            Switch::new("vim-mode", on)
+                .name(t!("settings-vim-mode"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.settings
+                        .update(cx, |settings, cx| settings.set_vim_mode(!on, cx));
+                }))
+                .into_any_element(),
+        )
+        .detail(t!("settings-vim-mode-detail"))
+        .into_any_element()
     }
 
     pub(super) fn language_row(&self, cx: &mut Context<Self>) -> AnyElement {

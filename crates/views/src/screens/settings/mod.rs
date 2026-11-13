@@ -21,6 +21,7 @@ use ui::{
 };
 
 use crate::chrome::{Chrome, OutputPicker};
+use crate::shared::motion;
 use crate::shared::popups::SearchPopup;
 use crate::shared::text;
 
@@ -135,6 +136,7 @@ enum Slot {
     ScrobbleProvider,
     Startup,
     Entries,
+    VimMode,
     Language,
     Tray,
     TrayIcon,
@@ -702,6 +704,7 @@ impl SettingsView {
             Slot::Folders => return None,
             Slot::Startup => (t!("settings-startup"), t!("settings-startup-detail")),
             Slot::Entries => (t!("settings-entries"), t!("settings-entries-detail")),
+            Slot::VimMode => (t!("settings-vim-mode"), t!("settings-vim-mode-detail")),
             Slot::Language => (t!("settings-language"), t!("settings-language-detail")),
             Slot::Tray => (
                 t!("settings-close-to-tray"),
@@ -970,6 +973,7 @@ impl SettingsView {
         match slot {
             Slot::Startup => self.startup_row(cx),
             Slot::Entries => self.entries_row(cx),
+            Slot::VimMode => self.vim_mode_row(cx),
             Slot::Language => self.language_row(cx),
             Slot::Tray => self.tray_row(cx),
             Slot::TrayIcon => self.tray_icon_row(cx),
@@ -1343,6 +1347,7 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        motion::page("settings", &self.scrollbar, cx);
         let theme = cx.theme();
         let geometry = (Layout::of(window, cx).width, theme.font_size, theme.radius);
         if self.geometry.replace(geometry) != Some(geometry) {
