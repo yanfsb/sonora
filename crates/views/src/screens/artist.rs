@@ -18,8 +18,8 @@ use ui::ActiveTheme as _;
 use ui::Listing as _;
 use ui::{
     Artwork, Button, Card, Deck, MIN_CONTENT, Modal, Mode, Pending, Picker, Pin, PinKind, Popovers,
-    Popup, Scrollbar, Scroller, TableDelegate, TableEvent, TableState, Text, effects, scrolled,
-    snapped, table,
+    Popup, Scrollbar, Scroller, TableDelegate, TableEvent, TableState, Text, clear_listing,
+    effects, scrolled, snapped, table,
 };
 
 use crate::chrome::tools;
@@ -30,9 +30,12 @@ use crate::shared::cards::{self, ReleaseFilter};
 use crate::shared::confirm::Confirm;
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
 use crate::shared::menus::{ItemMenu, artist_menu};
+use crate::shared::motion;
 use crate::shared::page;
+use crate::shared::panes::Id;
 use crate::shared::picks::{Picks, Shape};
 use crate::shared::shelves::{Rail, RailSpec};
+use crate::shared::surface;
 use crate::shared::tracks::{PlaybackStatus, TrackSource, Tracks, drop_picked, playback_status};
 use crate::shared::trouble;
 
@@ -1252,6 +1255,7 @@ impl Render for ArtistView {
         let previous = self.width;
         page::resize(&self.table, &mut self.width, inset, window, cx);
 
+        motion::page("artist-page", &self.scrollbar, cx);
         let scroll = self.scrollbar.read(cx).scroll().clone();
         self.settle_release_padding(scrolled(&scroll));
         self.hold_releases(window, cx);
@@ -1266,10 +1270,14 @@ impl Render for ArtistView {
         }
         if self.mode == Mode::List {
             self.table.claim(cx);
+            surface::register(surface::Surface::table(&self.table), cx);
             let mut viewport = page::viewport(&scroll, inset, window);
             viewport.top = (viewport.top - TABLE_BORDER).max(Pixels::ZERO);
             self.table
                 .update(cx, |table, _| table.set_viewport(viewport));
+        } else {
+            clear_listing(cx);
+            surface::remove(Id::Content, cx);
         }
 
         let picked = self.track_context.and_then(|(place, position)| {

@@ -28,12 +28,15 @@ use state::{
 use ui::{
     ActiveTheme as _, Button, Card, Deck, FilterChange, LEADING, Mode, Pinnable, Popovers, Popup,
     Scrollbar, Scroller, Sort, SortAxis, TableDelegate, TableEvent, TableSource, TableState, Text,
-    Vacancy, Viewport, heading, quantize, runtime, scrolled, snapped, table,
+    Vacancy, Viewport, clear_listing, heading, quantize, runtime, scrolled, snapped, table,
 };
 
 use crate::shared::album_grid::{AlbumGrid, CardGrid};
 use crate::shared::hero::{HeroMetaStrip, HeroPlayButton, PageHero};
+use crate::shared::motion;
+use crate::shared::panes::Id;
 use crate::shared::pins::Pinned as _;
+use crate::shared::surface;
 use crate::shared::tracks::{
     self, LIBRARY_COLUMNS, PlaybackStatus, TrackField, TrackSource, Tracks, playback_status,
 };
@@ -200,6 +203,7 @@ pub struct LibraryView {
     card_tile: Pixels,
     card_heading: Pixels,
     card_rows: Rc<[DeckRow]>,
+    card_cursor: Option<usize>,
     cards_dirty: bool,
     card_scrollbar: Entity<Scrollbar>,
     scrollbar: Entity<Scrollbar>,
@@ -428,6 +432,7 @@ impl LibraryView {
             card_tile: Pixels::ZERO,
             card_heading: Pixels::ZERO,
             card_rows: Rc::from([]),
+            card_cursor: None,
             cards_dirty: true,
             card_scrollbar,
             scrollbar,
@@ -609,6 +614,7 @@ impl LibraryView {
                 .read(cx)
                 .scroll()
                 .set_offset(Point::default());
+            self.card_cursor = None;
             self.cards_dirty = true;
         }
         self.section = section;
@@ -852,6 +858,7 @@ impl LibraryView {
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
+        self.card_cursor = None;
         self.cards_dirty = true;
         for table in self.tables() {
             table.rebuild(cx);
@@ -899,7 +906,266 @@ impl LibraryView {
             .into_any_element()
     }
 
-    fn cards(&mut self, window: &Window, cx: &App) -> AnyElement {
+    fn card_entries(&self) -> Vec<usize> {
+        self.card_rows
+            .iter()
+            .flat_map(|row| match row {
+                DeckRow::Heading(_) => Vec::new(),
+                DeckRow::Cards(cards) => cards.iter().map(|(display, _)| *display).collect(),
+            })
+            .collect()
+    }
+
+    fn move_card(&mut self, delta: isize, columns: usize, window: &Window, cx: &App) -> bool {
+        let entries = self.card_entries();
+        if entries.is_empty() {
+            return false;
+        }
+        let current = self
+            .card_cursor
+            .and_then(|display| entries.iter().position(|at| *at == display));
+        let next = match current {
+            None if delta < 0 => entries.len() - 1,
+            None => 0,
+            Some(at) => (at as isize + delta * columns as isize)
+                .clamp(0, entries.len() as isize - 1) as usize,
+        };
+        self.card_cursor = entries.get(next).copied();
+        self.reveal_card(window, cx);
+        true
+    }
+
+    fn select_card_edge(&mut self, last: bool, window: &Window, cx: &App) -> bool {
+        let entries = self.card_entries();
+        let Some(display) = entries.get(match last {
+            true => entries.len().saturating_sub(1),
+            false => 0,
+        }) else {
+            return false;
+        };
+        self.card_cursor = Some(*display);
+        self.reveal_card(window, cx);
+        true
+    }
+
+    fn select_card_page(&mut self, down: bool, columns: usize, window: &Window, cx: &App) -> bool {
+        let entries = self.card_entries();
+        if entries.is_empty() {
+            return false;
+        }
+        let current = self
+            .card_cursor
+            .and_then(|display| entries.iter().position(|at| *at == display));
+        let tile = self.card_scrollbar.read(cx).scroll().bounds().size.height;
+        let height = Card::tile_height(self.card_tile.max(px(1.)), window, cx).max(px(1.));
+        let rows = (tile / height).floor().max(1.) as usize;
+        let page = rows * columns.max(1);
+        let index = match (current, down) {
+            (Some(index), true) => index.saturating_add(page).min(entries.len() - 1),
+            (Some(index), false) => index.saturating_sub(page),
+            (None, true) => 0,
+            (None, false) => entries.len() - 1,
+        };
+        self.card_cursor = entries.get(index).copied();
+        self.reveal_card(window, cx);
+        true
+    }
+
+    fn reveal_card(&self, window: &Window, cx: &App) {
+        let Some(display) = self.card_cursor else {
+            return;
+        };
+        let Some(row) = self.card_rows.iter().position(|row| match row {
+            DeckRow::Heading(_) => false,
+            DeckRow::Cards(cards) => cards.iter().any(|(at, _)| *at == display),
+        }) else {
+            return;
+        };
+        let heights = deck_heights(&self.card_rows, self.card_tile, self.card_heading);
+        let top = Deck::tops(&heights, deck_gap(window))
+            .get(row)
+            .copied()
+            .unwrap_or(Pixels::ZERO)
+            + cx.theme().metrics.inset;
+        let height = heights.get(row).copied().unwrap_or(Pixels::ZERO);
+        let scroll = self.card_scrollbar.read(cx).scroll().clone();
+        let shown = -scroll.offset().y;
+        let visible = scroll.bounds().size.height;
+        let delta = if top < shown {
+            top - shown
+        } else if top + height > shown + visible {
+            top + height - shown - visible
+        } else {
+            return;
+        };
+        let offset = scroll.offset();
+        scroll.set_offset(point(offset.x, offset.y - delta));
+    }
+
+    fn activate_card(&mut self, cx: &mut Context<Self>) {
+        let Some(display) = self.card_cursor else {
+            return;
+        };
+        match self.section {
+            Section::Songs => self.play(display, cx),
+            Section::Albums => self.open_album(display, cx),
+            Section::Playlists => self.open_playlist(display, cx),
+            Section::Artists => self.open_artist(display, cx),
+        }
+    }
+
+    fn register_card_surface(&self, columns: usize, cx: &mut Context<Self>) {
+        let me = self.me.clone();
+        let focused = me.clone();
+        let ready = me.clone();
+        let selected = me.clone();
+        let next = me.clone();
+        let previous = me.clone();
+        let left = me.clone();
+        let right = me.clone();
+        let enter = me.clone();
+        let activate = me.clone();
+        let escape = me.clone();
+        let first = me.clone();
+        let last = me.clone();
+        let page_up = me.clone();
+        let page_down = me;
+        surface::register(
+            surface::Surface::custom(
+                move |_, cx| {
+                    focused
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).card_cursor.is_some())
+                },
+                move |cx| {
+                    ready.upgrade().is_some_and(|view| {
+                        view.read(cx)
+                            .card_rows
+                            .iter()
+                            .any(|row| matches!(row, DeckRow::Cards(cards) if !cards.is_empty()))
+                    })
+                },
+                move |cx| {
+                    selected
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).card_cursor.is_some())
+                },
+                move |window, cx| {
+                    next.update(cx, |view, cx| {
+                        let moved = view.move_card(1, columns, window, cx);
+                        if moved {
+                            cx.notify();
+                        }
+                        moved
+                    })
+                    .unwrap_or(false)
+                },
+                move |window, cx| {
+                    previous
+                        .update(cx, |view, cx| {
+                            let moved = view.move_card(-1, columns, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    left.update(cx, |view, cx| {
+                        let moved = view.move_card(-1, 1, window, cx);
+                        if moved {
+                            cx.notify();
+                        }
+                        moved
+                    })
+                    .unwrap_or(false)
+                },
+                move |window, cx| {
+                    right
+                        .update(cx, |view, cx| {
+                            let moved = view.move_card(1, 1, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    enter
+                        .update(cx, |view, cx| match view.card_cursor.is_some() {
+                            true => view.activate_card(cx),
+                            false => {
+                                view.move_card(1, columns, window, cx);
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                },
+                move |_, cx| {
+                    activate.update(cx, |view, cx| view.activate_card(cx)).ok();
+                },
+                move |_, cx| {
+                    escape
+                        .update(cx, |view, cx| {
+                            view.card_cursor = None;
+                            cx.notify();
+                        })
+                        .ok();
+                },
+            )
+            .edges(
+                move |window, cx| {
+                    first
+                        .update(cx, |view, cx| {
+                            let moved = view.select_card_edge(false, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    last.update(cx, |view, cx| {
+                        let moved = view.select_card_edge(true, window, cx);
+                        if moved {
+                            cx.notify();
+                        }
+                        moved
+                    })
+                    .unwrap_or(false)
+                },
+                move |window, cx| {
+                    page_up
+                        .update(cx, |view, cx| {
+                            let moved = view.select_card_page(false, columns, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+                move |window, cx| {
+                    page_down
+                        .update(cx, |view, cx| {
+                            let moved = view.select_card_page(true, columns, window, cx);
+                            if moved {
+                                cx.notify();
+                            }
+                            moved
+                        })
+                        .unwrap_or(false)
+                },
+            ),
+            cx,
+        );
+    }
+
+    fn cards(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        motion::page("library-cards", &self.card_scrollbar, cx);
         let theme = *cx.theme();
         let inset = theme.metrics.inset;
         let room = cells::content_width(window, page::reserved(inset), cx);
@@ -944,6 +1210,7 @@ impl LibraryView {
         }
         self.card_tile = tile;
         self.card_heading = heading;
+        self.register_card_surface(columns, cx);
 
         let heights = deck_heights(&self.card_rows, tile, heading);
         if let Some((index, share)) =
@@ -1065,6 +1332,7 @@ impl LibraryView {
                 .when_some(pin, Pinnable::pin)
                 .weight(FontWeight::SEMIBOLD)
                 .flat()
+                .chosen(self.card_cursor == Some(display))
                 .when(track.explicit, Card::explicit)
                 .bare_meta(artists)
                 .menu(move |event, _, cx| {
@@ -1102,6 +1370,7 @@ impl LibraryView {
         });
 
         AlbumGrid::new("library-album", room, albums, self.playback.clone())
+            .selected(self.card_cursor)
     }
 
     fn playlist_card(
@@ -1123,6 +1392,7 @@ impl LibraryView {
             build(id, &playlist, &self.playback, cx)
                 .tile(card)
                 .flat()
+                .chosen(self.card_cursor == Some(display))
                 .aria_position_in_set(display + 1)
                 .aria_size_of_set(total)
                 .into_any_element(),
@@ -1144,6 +1414,7 @@ impl LibraryView {
             cards::artist_card(id, &artist, &self.playback, cx)
                 .tile(card)
                 .flat()
+                .chosen(self.card_cursor == Some(display))
                 .aria_position_in_set(display + 1)
                 .aria_size_of_set(total)
                 .into_any_element(),
@@ -1154,18 +1425,23 @@ impl LibraryView {
 impl Render for LibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.resize(window, cx);
+        motion::page("library-page", &self.scrollbar, cx);
 
         let theme = *cx.theme();
         let inset = theme.metrics.inset;
         let mode = self.mode();
         if mode == Mode::List {
             self.table(self.section).claim(cx);
+            surface::register(surface::Surface::table(self.table(self.section)), cx);
             let scroll = self.scrollbar.read(cx).scroll().clone();
             let viewport = match self.section.listing() {
                 true => page::viewport(&scroll, inset, window),
                 false => Self::viewport(&scroll, window),
             };
             self.table(self.section).set_viewport(viewport, cx);
+        } else {
+            clear_listing(cx);
+            surface::remove(Id::Content, cx);
         }
 
         let context_menu = self.context_menu.clone().map(|(target, position)| {

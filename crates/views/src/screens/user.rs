@@ -12,6 +12,7 @@ use crate::shared::album_grid::CardGrid;
 use crate::shared::cards;
 use crate::shared::cells;
 use crate::shared::hero::{HeroMetaStrip, PageHero};
+use crate::shared::motion;
 use crate::shared::trouble;
 
 const FALLBACK: &str = "icons/user.svg";
@@ -189,6 +190,7 @@ impl Render for UserView {
                 .into_any_element();
         }
 
+        motion::page("user-page", &self.scrollbar, cx);
         let theme = *cx.theme();
         let pad = theme.metrics.inset;
         let room = cells::content_width(window, pad * 2., cx);

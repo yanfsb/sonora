@@ -1469,7 +1469,11 @@ impl Render for FullscreenView {
             .id("fullscreen")
             .role(Role::Main)
             .aria_label(t!("player-fullscreen"))
-            .key_context(super::shell_context(WORKSPACE_CONTEXT))
+            .key_context(super::vim_context(
+                WORKSPACE_CONTEXT,
+                self.settings.read(cx).vim_mode(),
+                false,
+            ))
             .track_focus(&self.focus)
             .relative()
             .flex()

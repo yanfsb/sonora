@@ -19,6 +19,7 @@ use crate::shared::hero::{
     HeroMetaStrip, HeroPlayButton, PageHero, copyright_notice, release_date_label,
 };
 use crate::shared::menus::ItemMenu;
+use crate::shared::motion;
 use crate::shared::pins::Pinned as _;
 use crate::shared::trouble;
 
@@ -573,6 +574,7 @@ impl Render for SongView {
                 .into_any_element();
         }
 
+        motion::page("song-page", &self.scrollbar, cx);
         let theme = *cx.theme();
         let (track, loading) = {
             let detail = self.detail.read(cx);

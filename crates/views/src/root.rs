@@ -27,6 +27,7 @@ use crate::screens::settings::SettingsHeader;
 use crate::shared::ambient::{self, Ambient};
 use crate::shared::tracks::{LIBRARY_COLUMNS, album_columns};
 use crate::shared::transport::{CoverAway, CoverFade};
+use crate::shared::{motion, panes, surface};
 use crate::shells::Shell;
 use crate::shells::workspace::Workspace;
 use crate::{
@@ -913,6 +914,9 @@ impl Root {
 
     fn show(&mut self, destination: Destination, cx: &mut Context<Self>) {
         clear_listing(cx);
+        motion::clear(cx);
+        panes::clear(cx);
+        surface::clear(cx);
         let opening = matches!(destination, Destination::Fullscreen);
         if opening != matches!(self.view, RootView::Fullscreen) {
             self.os_follow = Some(opening);
@@ -1022,7 +1026,7 @@ impl Root {
         self.toolbar = toolbar;
 
         self.shells.workspace.update(cx, |workspace, cx| {
-            workspace.set_content(content, header, cached, cx)
+            workspace.set_content(content, header, cached, home, cx)
         });
         cx.notify();
     }

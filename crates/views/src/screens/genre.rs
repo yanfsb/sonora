@@ -10,6 +10,7 @@ use ui::{ActiveTheme as _, Mode, Popovers, Scrollbar, Scroller, Skeleton, Text, 
 
 use crate::chrome::{Chrome, Toolbar, Tooled, tools};
 use crate::shared::cells;
+use crate::shared::motion;
 use crate::shared::shelves::Shelves;
 use crate::shared::trouble;
 
@@ -130,6 +131,7 @@ impl Render for GenreView {
                 .into_any_element();
         }
 
+        motion::page("genre", &self.scrollbar, cx);
         let theme = *cx.theme();
         let pad = theme.metrics.inset;
         let room = cells::content_width(window, pad * 2., cx);
@@ -143,11 +145,15 @@ impl Render for GenreView {
         let sections = detail.sections();
         let empty = !loading && sections.is_empty();
         let (mode, width) = (self.mode, self.width);
+        let scroll = self.scrollbar.read(cx).scroll().clone();
         let shelves = self
             .shelves
             .update(cx, |shelves, cx| match loading && sections.is_empty() {
-                true => shelves.pending(width, cx),
-                false => vec![shelves.render(sections, mode, width, window, cx)],
+                true => {
+                    motion::clear_horizontal(cx);
+                    shelves.pending(width, cx)
+                }
+                false => vec![shelves.render(sections, mode, width, scroll, window, cx)],
             });
 
         div()
