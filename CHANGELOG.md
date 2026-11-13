@@ -9,6 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Turn on Vim mode under Settings, General to move through the sidebar, queues, tables, shelves and search results with `j`, `k`, `h`, `l`, `gg`, `G` and `/`, and switch panes with `Ctrl-W`.
 - Scrobble to your own ListenBrainz server or to multi-scrobbler by filling in the server address when you connect ListenBrainz.
 - Hover a cut-off track title in the player bar to read it in full.
 
